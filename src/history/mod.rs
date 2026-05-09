@@ -62,6 +62,8 @@ pub struct HistoryEntry {
     pub role: String,
     pub content: String,
     pub ts: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdin_bytes: Option<usize>,
 }
 
 impl HistoryEntry {
@@ -70,7 +72,15 @@ impl HistoryEntry {
             role: role.into(),
             content: content.into(),
             ts: utc_timestamp(),
+            stdin_bytes: None,
         }
+    }
+
+    pub fn with_stdin_bytes(mut self, stdin_bytes: usize) -> Self {
+        if stdin_bytes > 0 {
+            self.stdin_bytes = Some(stdin_bytes);
+        }
+        self
     }
 }
 
@@ -99,7 +109,7 @@ pub async fn run_local_request(
 
     let answer = client.ask(context, &history, &input).await?;
     let pair = [
-        HistoryEntry::new("user", input.prompt),
+        HistoryEntry::new("user", input.prompt).with_stdin_bytes(input.stdin_bytes),
         HistoryEntry::new("assistant", answer.clone()),
     ];
     append_pair(session, &conversation_id, &pair)?;
@@ -402,6 +412,24 @@ mod tests {
         assert_eq!(parse_jsonl(text).unwrap().len(), 2);
         let bad = r#"{"role":"system","content":"x","ts":""}"#;
         assert!(parse_jsonl(bad).is_err());
+    }
+
+    #[test]
+    fn history_entries_preserve_stdin_metadata() {
+        let entry = HistoryEntry::new("user", "summarize\n\nInput:\nhello").with_stdin_bytes(5);
+        let line = serde_json::to_string(&entry).unwrap();
+
+        assert!(line.contains(r#""stdin_bytes":5"#));
+        assert_eq!(
+            serde_json::from_str::<HistoryEntry>(&line)
+                .unwrap()
+                .stdin_bytes,
+            Some(5)
+        );
+        assert_eq!(
+            serde_json::to_value(HistoryEntry::new("assistant", "ok")).unwrap()["stdin_bytes"],
+            serde_json::Value::Null
+        );
     }
 
     #[test]

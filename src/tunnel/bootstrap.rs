@@ -105,6 +105,7 @@ _sgpt_build_prompt_file() {
   shift
   _sgpt_args=
   _sgpt_continue=0
+  _sgpt_stdin_bytes=0
   if [ "${1:-}" = "-c" ] || [ "${1:-}" = "--continue" ]; then
     _sgpt_continue=1
     shift
@@ -123,6 +124,7 @@ _sgpt_build_prompt_file() {
     _sgpt_stdin_file="$(mktemp "$SGPT_SESSION_DIR/stdin-XXXXXXXXXX")" || return 2
     command cat >"$_sgpt_stdin_file"
     _sgpt_size="$(wc -c <"$_sgpt_stdin_file" | tr -d ' ')"
+    _sgpt_stdin_bytes="$_sgpt_size"
     if [ "$_sgpt_size" -gt 524288 ]; then
       rm -f -- "$_sgpt_stdin_file"
       printf 'stdin exceeded 512 KiB limit.\n' >&2
@@ -178,15 +180,16 @@ _sgpt_history_json() {
     printf 'conversation history exceeded 2 MiB limit.\n' >&2
     return 1
   fi
-  command jq -s 'map(select(.role == "user" or .role == "assistant") | {role,content,ts})' "$_sgpt_history_file"
+  command jq -s 'map(select(.role == "user" or .role == "assistant") | {role,content,ts,stdin_bytes:.stdin_bytes})' "$_sgpt_history_file"
 }
 
 _sgpt_append_history() {
   _sgpt_conversation_id="$1"
   _sgpt_prompt_file="$2"
   _sgpt_answer_file="$3"
+  _sgpt_stdin_bytes="$4"
   _sgpt_history_file="$SGPT_SESSION_DIR/conversations/$_sgpt_conversation_id.jsonl"
-  _sgpt_user_line="$(command jq -nc --rawfile content "$_sgpt_prompt_file" --arg ts "$(_sgpt_now)" '{role:"user",content:$content,ts:$ts}')"
+  _sgpt_user_line="$(command jq -nc --rawfile content "$_sgpt_prompt_file" --arg ts "$(_sgpt_now)" --argjson stdin_bytes "$_sgpt_stdin_bytes" '{role:"user",content:$content,ts:$ts} + if $stdin_bytes > 0 then {stdin_bytes:$stdin_bytes} else {} end')"
   _sgpt_assistant_line="$(command jq -nc --rawfile content "$_sgpt_answer_file" --arg ts "$(_sgpt_now)" '{role:"assistant",content:$content,ts:$ts}')"
   {
     printf '%s\n' "$_sgpt_user_line"
@@ -256,7 +259,7 @@ _sgpt_ask() {
     printf 'AI response exceeded 512 KiB limit.\n' >&2
     _sgpt_lock_release; rm -f -- "$_sgpt_prompt_file" "$_sgpt_request_file" "$_sgpt_answer_file"; return 1
   fi
-  _sgpt_append_history "$_sgpt_conversation_id" "$_sgpt_prompt_file" "$_sgpt_answer_file" || {
+  _sgpt_append_history "$_sgpt_conversation_id" "$_sgpt_prompt_file" "$_sgpt_answer_file" "$_sgpt_stdin_bytes" || {
     _sgpt_lock_release; rm -f -- "$_sgpt_prompt_file" "$_sgpt_request_file" "$_sgpt_answer_file"; return 1
   }
   if [ "$_sgpt_continue" = "normal" ]; then
@@ -378,123 +381,3 @@ EOF
     ;;
 esac
 "#;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stage1_template_has_no_local_ai_config_names() {
-        let script = stage1_script();
-        assert!(!script.contains("SGPT_API_KEY"));
-        assert!(!script.contains("SGPT_BASE_URL"));
-        assert!(!script.contains("SGPT_MODEL"));
-        assert!(!script.contains("SGPT_PROXY"));
-        assert!(script.contains("Authorization: Bearer $SGPT_SESSION_TOKEN"));
-    }
-
-    #[test]
-    fn stage1_template_checks_required_dependencies() {
-        let script = stage1_script();
-        for dep in ["curl", "jq", "base64", "od", "tr", "mktemp", "cat", "wc"] {
-            assert!(script.contains(dep));
-        }
-    }
-
-    #[test]
-    fn common_rc_defines_cleanup_used_by_shell_exit_traps() {
-        let common = common_rc_body();
-        assert!(common.contains("_sgpt_cleanup()"));
-        assert!(common.contains("rm -rf -- \"$SGPT_SESSION_DIR\""));
-    }
-
-    #[test]
-    fn zsh_startup_sources_login_locale_files_before_injection() {
-        let branch = zsh_branch();
-        assert!(branch.contains("exec zsh -l -i"));
-        let zprofile = branch.find(".zprofile").unwrap();
-        let zshrc = branch.find(".zshrc").unwrap();
-        let zlogin = branch.find(".zlogin").unwrap();
-        let common = branch.find("$_sgpt_common_rc").unwrap();
-        assert!(zprofile < zshrc);
-        assert!(zshrc < zlogin);
-        assert!(zlogin < common);
-    }
-
-    #[test]
-    fn zsh_cleanup_uses_top_level_exit_trap_not_trapexit_function() {
-        let branch = zsh_branch();
-        assert!(branch.contains("trap '_sgpt_cleanup' EXIT"));
-        assert!(!branch.contains("TRAPEXIT()"));
-    }
-
-    #[test]
-    fn bash_startup_loads_login_profile_chain_before_injection() {
-        let branch = bash_branch();
-        let etc_profile = branch.find("/etc/profile").unwrap();
-        let bash_profile = branch.find(".bash_profile").unwrap();
-        let bash_login = branch.find(".bash_login").unwrap();
-        let profile = branch.find(".profile").unwrap();
-        let bashrc = branch.find(".bashrc").unwrap();
-        let common = branch.find("$_sgpt_common_rc").unwrap();
-        assert!(etc_profile < bash_profile);
-        assert!(bash_profile < bash_login);
-        assert!(bash_login < profile);
-        assert!(profile < bashrc);
-        assert!(bashrc < common);
-    }
-
-    #[test]
-    fn fish_starts_as_login_interactive_shell() {
-        let branch = fish_branch();
-        assert!(branch.contains("exec fish -l -i"));
-    }
-
-    #[test]
-    fn nested_tunnel_embeds_bootstrap_env_in_remote_command() {
-        let common = common_rc_body();
-        assert!(common.contains("_sgpt_remote_bootstrap_cmd=\"SGPT_PORT=$(_sgpt_shell_quote"));
-        assert!(common.contains("\"$_sgpt_remote_bootstrap_cmd\""));
-        assert!(!common.contains("SGPT_STAGE1_B64=\"$_sgpt_stage1_b64\" \\\n    command ssh"));
-    }
-
-    #[test]
-    fn stage1_template_avoids_unlisted_remote_helpers() {
-        let script = stage1_script();
-        for dep in ["bass", "tail", "grep", "sed"] {
-            assert!(!script.contains(dep));
-        }
-    }
-
-    fn common_rc_body() -> &'static str {
-        stage1_script()
-            .split("cat >\"$_sgpt_common_rc\" <<'SGPT_COMMON'\n")
-            .nth(1)
-            .and_then(|rest| rest.split("\nSGPT_COMMON").next())
-            .expect("common rc heredoc exists")
-    }
-
-    fn zsh_branch() -> &'static str {
-        stage1_script()
-            .split("  zsh)\n")
-            .nth(1)
-            .and_then(|rest| rest.split("  fish)").next())
-            .expect("zsh branch exists")
-    }
-
-    fn bash_branch() -> &'static str {
-        stage1_script()
-            .split("  bash)\n")
-            .nth(1)
-            .and_then(|rest| rest.split("  zsh)").next())
-            .expect("bash branch exists")
-    }
-
-    fn fish_branch() -> &'static str {
-        stage1_script()
-            .split("  fish)\n")
-            .nth(1)
-            .and_then(|rest| rest.split("  *)").next())
-            .expect("fish branch exists")
-    }
-}

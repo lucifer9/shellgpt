@@ -7,11 +7,11 @@ use crate::redact::redact_provider_error;
 use anyhow::{bail, ensure};
 use serde::{Deserialize, Serialize};
 
+mod history_selection;
+
 pub const REQUEST_BODY_LIMIT: usize = 1024 * 1024;
 pub const RESPONSE_BODY_LIMIT: usize = 2 * 1024 * 1024;
 pub const ASSISTANT_LIMIT: usize = 512 * 1024;
-const HISTORY_MESSAGE_LIMIT: usize = 20;
-const HISTORY_CHAR_LIMIT: usize = 24_000;
 
 #[derive(Clone)]
 pub struct OpenAiClient {
@@ -99,7 +99,7 @@ pub fn build_chat_request(
         role: "system".into(),
         content: system_prompt(config.system_prompt.as_deref(), context),
     }];
-    messages.extend(history_messages(history));
+    messages.extend(history_selection::history_messages(history));
     messages.push(ChatMessage {
         role: "user".into(),
         content: current_prompt.to_string(),
@@ -122,39 +122,6 @@ fn system_prompt(extra: Option<&str>, context: &ContextBlock) -> String {
     prompt.push_str("\n\n");
     prompt.push_str(&context.render());
     prompt
-}
-
-fn history_messages(entries: &[HistoryEntry]) -> Vec<ChatMessage> {
-    let mut turns = Vec::new();
-    let mut i = 0;
-    while i + 1 < entries.len() {
-        if entries[i].role == "user" && entries[i + 1].role == "assistant" {
-            turns.push((&entries[i], &entries[i + 1]));
-            i += 2;
-        } else {
-            i += 1;
-        }
-    }
-
-    let mut out_rev = Vec::new();
-    let mut chars = 0;
-    for (user, assistant) in turns.into_iter().rev() {
-        let turn_chars = user.content.chars().count() + assistant.content.chars().count();
-        if out_rev.len() + 2 > HISTORY_MESSAGE_LIMIT || chars + turn_chars > HISTORY_CHAR_LIMIT {
-            break;
-        }
-        chars += turn_chars;
-        out_rev.push(ChatMessage {
-            role: assistant.role.clone(),
-            content: assistant.content.clone(),
-        });
-        out_rev.push(ChatMessage {
-            role: user.role.clone(),
-            content: user.content.clone(),
-        });
-    }
-    out_rev.reverse();
-    out_rev
 }
 
 pub fn parse_chat_response(bytes: &[u8]) -> anyhow::Result<String> {
@@ -225,28 +192,5 @@ mod tests {
         let bad = br#"{"choices":[{"message":{"tool_calls":[]}}]}"#;
         let err = parse_chat_response(bad).unwrap_err().to_string();
         assert_eq!(err, ERR_AI_NO_TEXT);
-    }
-
-    #[test]
-    fn drops_old_history_as_complete_turns() {
-        let entries = (0..12)
-            .flat_map(|i| {
-                [
-                    HistoryEntry::new("user", format!("u{i}")),
-                    HistoryEntry::new("assistant", format!("a{i}")),
-                ]
-            })
-            .collect::<Vec<_>>();
-        let request =
-            build_chat_request(&config(), &ContextBlock::default(), &entries, "now").unwrap();
-        let roles = request
-            .messages
-            .iter()
-            .map(|m| m.role.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(roles.len(), 22);
-        assert_eq!(request.messages[1].content, "u2");
-        assert_eq!(request.messages[20].content, "a11");
-        assert_eq!(request.messages[21].content, "now");
     }
 }
