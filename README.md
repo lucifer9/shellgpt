@@ -24,8 +24,8 @@
 
 - **OpenAI 兼容接口**：支持任何兼容 `/v1/chat/completions` 的服务。
 - **上下文感知**：自动收集当前环境的 `cwd`、`uname`、`SHELL`、`/etc/os-release`、`sw_vers` 等信息；在远端使用时收集的是远端上下文。
-- **管道输入**：可将 stdin 与提示词组合后发送给模型。
-- **会话续聊**：使用 `-c` / `--continue` 继续当前终端或当前目录下的上一段对话。
+- **管道输入**：可将 stdin 与提示词组合后发送给模型，并在续聊时尽量保留这类输入上下文。
+- **会话续聊**：使用 `-c` / `--continue` 继续当前终端或当前目录下的上一段对话；较早的 stdin 输入会作为历史锚点保留。
 - **SSH 隧道模式**：在远端交互式 Shell 中注入 `sgpt` 函数，远端请求经 SSH 反向端口转发回本机，由本机调用 AI 服务。
 - **安全默认值**：本地 API Key 不会发送到远端；远端仅持有临时会话 Token。
 
@@ -58,7 +58,7 @@ cargo install --path .
 | `SGPT_BASE_URL` | 是 | OpenAI 兼容 API 的 Base URL，例如 `https://api.openai.com` 或 `https://api.example.com/v1`。不要填写完整的 `/chat/completions` 地址。 |
 | `SGPT_API_KEY` | 是 | API Key。 |
 | `SGPT_MODEL` | 是 | 模型名称。 |
-| `SGPT_SYSTEM_PROMPT` | 否 | 追加到内置系统提示词后的自定义系统提示。 |
+| `SGPT_SYSTEM_PROMPT` | 否 | 追加到内置系统提示词后的自定义指令或上下文。自动收集的 cwd、OS、Shell 等上下文仍会一起发送。 |
 | `SGPT_PROXY` | 否 | reqwest 代理地址，支持 HTTP/SOCKS，例如 `socks5h://127.0.0.1:7890`。 |
 | `SGPT_TIMEOUT_SECONDS` | 否 | 请求超时时间，范围 `1..=600`，默认 `60`。 |
 | `SGPT_DEBUG` | 否 | 设为 `1` 时输出调试信息。 |
@@ -95,6 +95,8 @@ git diff | sgpt "帮我总结这次改动"
 
 - 只有 stdin：stdin 内容会直接作为提示词；
 - 同时有参数和 stdin：参数会作为指令，stdin 内容会附加到 `Input:` 区块。
+
+带 stdin 的提问会在历史中记录输入大小。之后使用 `-c` / `--continue` 时，`sgpt` 会尽量保留这些带输入的历史消息，即使较早的普通对话轮次因为上下文限制被裁掉，先前传入的文件、diff、日志等输入仍会继续提供给模型；如果这类输入过长，会保留开头和结尾，并用 `[history truncated]` 标记中间被截断的部分。
 
 ### 继续上一轮对话
 
@@ -201,7 +203,9 @@ SGPT_PORT=18080 sgpt tunnel ssh user@example.com
 ## 限制
 
 - stdin 最大 `512 KiB`。
-- 发送给 AI Provider 的请求体最大 `1 MiB`；超出时会尝试丢弃较早历史。
+- 续聊时最多携带 20 条历史消息；历史内容最多约 200,000 字符。
+- 带 stdin 的历史输入会作为锚点尽量保留，锚点总量最多约 150,000 字符；超长锚点会保留首尾并标记截断。
+- 发送给 AI Provider 的请求体最大 `1 MiB`；超出时会尝试丢弃较早的非锚点历史。
 - AI 响应体最大 `2 MiB`。
 - 最终助手文本最大 `512 KiB`。
 - 本地历史单文件最大 `2 MiB`。
