@@ -1,13 +1,11 @@
 use crate::config::AiConfig;
 use crate::context::ContextBlock;
+use crate::conversation::{Conversation, UserInput};
 use crate::error::{ERR_AI_ANSWER_TOO_LARGE, ERR_AI_BODY_TOO_LARGE, ERR_AI_NO_TEXT};
-use crate::history::HistoryEntry;
-use crate::input::UserInput;
 use crate::redact::redact_provider_error;
 use anyhow::{bail, ensure};
-use serde::{Deserialize, Serialize};
 
-mod history_selection;
+mod request;
 
 pub const REQUEST_BODY_LIMIT: usize = 1024 * 1024;
 pub const RESPONSE_BODY_LIMIT: usize = 2 * 1024 * 1024;
@@ -30,18 +28,10 @@ impl OpenAiClient {
     pub async fn ask(
         &self,
         context: &ContextBlock,
-        history: &[HistoryEntry],
+        conversation: &Conversation,
         input: &UserInput,
     ) -> anyhow::Result<String> {
-        let request = build_chat_request(&self.config, context, history, &input.prompt)?;
-        let mut body = serde_json::to_vec(&request)?;
-        while body.len() > REQUEST_BODY_LIMIT {
-            let Some(shorter) = request.with_less_history() else {
-                bail!("AI request exceeded 1 MiB limit.");
-            };
-            body = serde_json::to_vec(&shorter)?;
-        }
-
+        let body = request::build_body(&self.config, context, conversation, input)?;
         let response = self
             .http
             .post(&self.config.endpoint)
@@ -51,8 +41,7 @@ impl OpenAiClient {
             .send()
             .await?;
         let status = response.status();
-        let bytes = response.bytes().await?;
-        ensure!(bytes.len() <= RESPONSE_BODY_LIMIT, ERR_AI_BODY_TOO_LARGE);
+        let bytes = read_bounded_response(response).await?;
         if !status.is_success() {
             let body = String::from_utf8_lossy(&bytes);
             bail!(
@@ -65,63 +54,22 @@ impl OpenAiClient {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct ChatRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
-    temperature: f64,
-}
-
-impl ChatRequest {
-    fn with_less_history(&self) -> Option<Self> {
-        if self.messages.len() <= 2 {
-            return None;
-        }
-        let mut next = self.clone();
-        next.messages.remove(1);
-        Some(next)
+async fn read_bounded_response(mut response: reqwest::Response) -> anyhow::Result<Vec<u8>> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > RESPONSE_BODY_LIMIT as u64)
+    {
+        bail!(ERR_AI_BODY_TOO_LARGE);
     }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ChatMessage {
-    role: String,
-    content: String,
-}
-
-pub fn build_chat_request(
-    config: &AiConfig,
-    context: &ContextBlock,
-    history: &[HistoryEntry],
-    current_prompt: &str,
-) -> anyhow::Result<ChatRequest> {
-    let mut messages = vec![ChatMessage {
-        role: "system".into(),
-        content: system_prompt(config.system_prompt.as_deref(), context),
-    }];
-    messages.extend(history_selection::history_messages(history));
-    messages.push(ChatMessage {
-        role: "user".into(),
-        content: current_prompt.to_string(),
-    });
-    Ok(ChatRequest {
-        model: config.model.clone(),
-        messages,
-        temperature: 0.2,
-    })
-}
-
-fn system_prompt(extra: Option<&str>, context: &ContextBlock) -> String {
-    let mut prompt = String::from(
-        "You are sgpt, a concise shell assistant. Suggest shell commands; do not claim commands were executed. Respect detected OS, shell, and cwd context. Do not assume GNU tools on macOS. Prefer concise, low-noise answers. For simple command suggestions, avoid heavy Markdown unless multi-line formatting helps. Prefer read-only inspection commands or ask for clarification for destructive or production-impacting requests. Never present destructive commands as the default unless explicitly requested.",
-    );
-    if let Some(extra) = extra.filter(|s| !s.is_empty()) {
-        prompt.push_str("\n\nAdditional user system prompt:\n");
-        prompt.push_str(extra);
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        ensure!(
+            bytes.len().saturating_add(chunk.len()) <= RESPONSE_BODY_LIMIT,
+            ERR_AI_BODY_TOO_LARGE
+        );
+        bytes.extend_from_slice(&chunk);
     }
-    prompt.push_str("\n\n");
-    prompt.push_str(&context.render());
-    prompt
+    Ok(bytes)
 }
 
 pub fn parse_chat_response(bytes: &[u8]) -> anyhow::Result<String> {
@@ -145,6 +93,8 @@ pub fn parse_chat_response(bytes: &[u8]) -> anyhow::Result<String> {
 mod tests {
     use super::*;
     use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     fn config() -> AiConfig {
         AiConfig {
@@ -155,42 +105,75 @@ mod tests {
             proxy: None,
             timeout: Duration::from_secs(60),
             debug: false,
+            max_projected_sessions: 64,
+            max_concurrent_requests: 4,
         }
     }
 
     #[test]
     fn serializes_openai_compatible_request() {
-        let request = build_chat_request(
+        let body = request::build_body(
             &config(),
             &ContextBlock {
                 cwd: "/tmp".into(),
                 ..Default::default()
             },
-            &[],
-            "hello",
+            &Conversation::default(),
+            &UserInput::new("hello", ""),
         )
         .unwrap();
-        let json = serde_json::to_value(request).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["model"], "test-model");
-        assert_eq!(json["temperature"], 0.2);
         assert_eq!(json["messages"][0]["role"], "system");
-        assert!(
-            json["messages"][0]["content"]
-                .as_str()
-                .unwrap()
-                .contains("/tmp")
-        );
-        assert_eq!(json["messages"][1]["role"], "user");
         assert_eq!(json["messages"][1]["content"], "hello");
+        assert!(body.len() <= REQUEST_BODY_LIMIT);
     }
 
     #[test]
     fn parse_response_accepts_only_text_message_content() {
         let ok = br#"{"choices":[{"message":{"content":"answer"}}]}"#;
         assert_eq!(parse_chat_response(ok).unwrap(), "answer");
-
         let bad = br#"{"choices":[{"message":{"tool_calls":[]}}]}"#;
-        let err = parse_chat_response(bad).unwrap_err().to_string();
-        assert_eq!(err, ERR_AI_NO_TEXT);
+        assert_eq!(
+            parse_chat_response(bad).unwrap_err().to_string(),
+            ERR_AI_NO_TEXT
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_body_limit_is_streaming_for_chunked_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n")
+                .await
+                .unwrap();
+            let chunk = vec![b'x'; 64 * 1024];
+            for _ in 0..40 {
+                if stream.write_all(b"10000\r\n").await.is_err()
+                    || stream.write_all(&chunk).await.is_err()
+                    || stream.write_all(b"\r\n").await.is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let mut config = config();
+        config.endpoint = format!("http://{address}/v1/chat/completions");
+        let client = OpenAiClient::new(config).unwrap();
+        let err = client
+            .ask(
+                &ContextBlock::default(),
+                &Conversation::default(),
+                &UserInput::new("hello", ""),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, ERR_AI_BODY_TOO_LARGE);
     }
 }

@@ -30,7 +30,10 @@ where
 
 pub fn parse_strings(mut args: Vec<String>) -> anyhow::Result<Command> {
     if args.is_empty() {
-        bail!("usage: sgpt <prompt...>");
+        return Ok(Command::Local {
+            continue_mode: false,
+            prompt_args: Vec::new(),
+        });
     }
     match args[0].as_str() {
         "--version" => {
@@ -55,7 +58,6 @@ pub fn parse_strings(mut args: Vec<String>) -> anyhow::Result<Command> {
             if args.first().is_some_and(|arg| arg == "--") {
                 args.remove(0);
             }
-            ensure!(!args.is_empty(), "prompt is required");
             Ok(Command::Local {
                 continue_mode: true,
                 prompt_args: args,
@@ -63,7 +65,6 @@ pub fn parse_strings(mut args: Vec<String>) -> anyhow::Result<Command> {
         }
         "--" => {
             args.remove(0);
-            ensure!(!args.is_empty(), "prompt is required");
             Ok(Command::Local {
                 continue_mode: false,
                 prompt_args: args,

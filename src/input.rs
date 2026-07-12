@@ -1,13 +1,8 @@
+use crate::conversation::UserInput;
 use anyhow::{bail, ensure};
 use std::io::{IsTerminal, Read};
 
 pub const STDIN_LIMIT: usize = 512 * 1024;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UserInput {
-    pub prompt: String,
-    pub stdin_bytes: usize,
-}
 
 pub fn compose_prompt<R: Read + IsTerminal>(
     prompt_args: Vec<String>,
@@ -32,23 +27,14 @@ pub fn compose_prompt_with_is_tty<R: Read>(
         let len = bytes.len();
         let text =
             String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("stdin must be valid UTF-8."))?;
-        Some((text, len))
+        if len == 0 { None } else { Some(text) }
     };
 
     match (args_text.is_empty(), stdin_text) {
         (true, None) => bail!("prompt is required when stdin is a TTY."),
-        (false, None) => Ok(UserInput {
-            prompt: args_text,
-            stdin_bytes: 0,
-        }),
-        (true, Some((stdin_text, stdin_bytes))) => Ok(UserInput {
-            prompt: stdin_text,
-            stdin_bytes,
-        }),
-        (false, Some((stdin_text, stdin_bytes))) => Ok(UserInput {
-            prompt: format!("{args_text}\n\nInput:\n{stdin_text}"),
-            stdin_bytes,
-        }),
+        (false, None) => Ok(UserInput::new(args_text, "")),
+        (true, Some(stdin_text)) => Ok(UserInput::new("", stdin_text)),
+        (false, Some(stdin_text)) => Ok(UserInput::new(args_text, stdin_text)),
     }
 }
 
@@ -63,15 +49,28 @@ mod tests {
         let input =
             compose_prompt_with_is_tty(vec!["summarize".into(), "this".into()], false, &mut stdin)
                 .unwrap();
-        assert_eq!(input.prompt, "summarize this\n\nInput:\nhello\n");
-        assert_eq!(input.stdin_bytes, 6);
+        assert_eq!(input.instruction, "summarize this");
+        assert_eq!(input.stdin, "hello\n");
+        assert_eq!(input.rendered(), "summarize this\n\nInput:\nhello\n");
     }
 
     #[test]
     fn stdin_alone_becomes_prompt() {
         let mut stdin = Cursor::new(b"hello".to_vec());
         let input = compose_prompt_with_is_tty(Vec::new(), false, &mut stdin).unwrap();
-        assert_eq!(input.prompt, "hello");
+        assert_eq!(input.instruction, "");
+        assert_eq!(input.stdin, "hello");
+    }
+
+    #[test]
+    fn zero_byte_pipe_is_no_stdin_and_does_not_create_input_block() {
+        let mut stdin = Cursor::new(Vec::new());
+        let input = compose_prompt_with_is_tty(vec!["hello".into()], false, &mut stdin).unwrap();
+        assert_eq!(input.rendered(), "hello");
+        let err = compose_prompt_with_is_tty(Vec::new(), false, &mut Cursor::new(Vec::new()))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("prompt is required"));
     }
 
     #[test]

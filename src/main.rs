@@ -2,35 +2,41 @@ mod ai;
 mod cli;
 mod config;
 mod context;
+mod conversation;
 mod debug;
 mod error;
-mod history;
 mod ids;
 mod input;
+mod local_session;
+mod projection;
 mod redact;
 mod relay;
 mod tunnel;
 
-use anyhow::Context as _;
+use std::io::Write as _;
 
 #[tokio::main]
 async fn main() {
-    if let Err(err) = run().await {
-        eprintln!("{err:#}");
-        std::process::exit(1);
+    match run().await {
+        Ok(0) => {}
+        Ok(code) => std::process::exit(code),
+        Err(err) => {
+            eprintln!("{err:#}");
+            std::process::exit(1);
+        }
     }
 }
 
-async fn run() -> anyhow::Result<()> {
+async fn run() -> anyhow::Result<i32> {
     let command = cli::parse_args(std::env::args_os().skip(1))?;
     match command {
         cli::Command::Version => {
             println!("{}", env!("CARGO_PKG_VERSION"));
-            Ok(())
+            Ok(0)
         }
         cli::Command::BootstrapSh => {
             print!("{}", tunnel::bootstrap::stage1_script());
-            Ok(())
+            Ok(0)
         }
         cli::Command::Local {
             continue_mode,
@@ -39,16 +45,38 @@ async fn run() -> anyhow::Result<()> {
             let input = input::compose_prompt(prompt_args, std::io::stdin())?;
             let config = config::AiConfig::from_env()?;
             let context = context::collect_local_context().await;
-            let session = history::LocalSession::resolve().await?;
-            let client = ai::OpenAiClient::new(config.clone())?;
-            history::run_local_request(&session, &client, &config, &context, continue_mode, input)
-                .await
+            let debug = config.debug;
+            let client = ai::OpenAiClient::new(config)?;
+            let session = local_session::LocalShellSession::new(client, debug);
+            let answer = session
+                .execute(local_session::LocalRequest {
+                    mode: if continue_mode {
+                        local_session::RequestMode::Continue
+                    } else {
+                        local_session::RequestMode::New
+                    },
+                    context,
+                    input,
+                })
+                .await?;
+            print_answer(&answer)?;
+            Ok(0)
         }
         cli::Command::TunnelSsh { ssh_args } => {
             let config = config::AiConfig::from_env()?;
-            tunnel::ssh::run_tunnel(ssh_args, config)
-                .await
-                .context("tunnel failed")
+            match tunnel::ssh::run_tunnel(ssh_args, config).await? {
+                tunnel::ssh::TunnelOutcome::Success => Ok(0),
+                tunnel::ssh::TunnelOutcome::SshExited(code) => Ok(code),
+            }
         }
     }
+}
+
+fn print_answer(answer: &str) -> anyhow::Result<()> {
+    print!("{answer}");
+    if !answer.ends_with('\n') {
+        println!();
+    }
+    std::io::stdout().flush()?;
+    Ok(())
 }

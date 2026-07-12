@@ -12,6 +12,8 @@ pub struct AiConfig {
     pub proxy: Option<String>,
     pub timeout: Duration,
     pub debug: bool,
+    pub max_projected_sessions: usize,
+    pub max_concurrent_requests: usize,
 }
 
 impl AiConfig {
@@ -28,6 +30,20 @@ impl AiConfig {
             proxy: std::env::var("SGPT_PROXY").ok().filter(|s| !s.is_empty()),
             timeout: parse_timeout(std::env::var("SGPT_TIMEOUT_SECONDS").ok())?,
             debug: crate::debug::enabled(),
+            max_projected_sessions: parse_bounded(
+                "SGPT_MAX_PROJECTED_SESSIONS",
+                std::env::var("SGPT_MAX_PROJECTED_SESSIONS").ok(),
+                64,
+                1,
+                256,
+            )?,
+            max_concurrent_requests: parse_bounded(
+                "SGPT_MAX_CONCURRENT_REQUESTS",
+                std::env::var("SGPT_MAX_CONCURRENT_REQUESTS").ok(),
+                4,
+                1,
+                16,
+            )?,
         })
     }
 
@@ -48,23 +64,42 @@ fn env_required(name: &str) -> anyhow::Result<String> {
 }
 
 pub fn normalize_base_url(input: &str) -> anyhow::Result<String> {
-    let trimmed = input.trim_end_matches('/');
-    ensure!(!trimmed.is_empty(), "SGPT_BASE_URL is not set.");
-    let url = Url::parse(trimmed)?;
+    ensure!(!input.is_empty(), "SGPT_BASE_URL is not set.");
+    let mut url = Url::parse(input)?;
     ensure!(
         matches!(url.scheme(), "http" | "https"),
         "SGPT_BASE_URL must start with http:// or https://."
     );
-    let path = url.path().trim_end_matches('/');
+    ensure!(
+        url.fragment().is_none(),
+        "SGPT_BASE_URL must not contain a fragment."
+    );
+    let path = url.path().trim_end_matches('/').to_string();
     ensure!(
         !path.ends_with("/chat/completions"),
         "SGPT_BASE_URL must be a base URL, not a /chat/completions endpoint."
     );
     if path.ends_with("/v1") {
-        Ok(format!("{trimmed}/chat/completions"))
+        url.set_path(&format!("{path}/chat/completions"));
     } else {
-        Ok(format!("{trimmed}/v1/chat/completions"))
+        url.set_path(&format!("{path}/v1/chat/completions"));
     }
+    Ok(url.into())
+}
+
+fn parse_bounded(
+    name: &str,
+    value: Option<String>,
+    default: usize,
+    min: usize,
+    max: usize,
+) -> anyhow::Result<usize> {
+    let parsed = value.map_or(Ok(default), |value| value.parse::<usize>())?;
+    ensure!(
+        (min..=max).contains(&parsed),
+        "{name} must be in {min}..={max}."
+    );
+    Ok(parsed)
 }
 
 pub fn validate_api_key(value: &str) -> anyhow::Result<()> {
@@ -114,6 +149,11 @@ mod tests {
             normalize_base_url("https://api.example.com/v1/").unwrap(),
             "https://api.example.com/v1/chat/completions"
         );
+        assert_eq!(
+            normalize_base_url("https://[::1]/api?tenant=a").unwrap(),
+            "https://[::1]/api/v1/chat/completions?tenant=a"
+        );
+        assert!(normalize_base_url("https://api.example.com#fragment").is_err());
     }
 
     #[test]
@@ -140,5 +180,12 @@ mod tests {
         );
         assert!(parse_timeout(Some("0".into())).is_err());
         assert!(parse_timeout(Some("601".into())).is_err());
+    }
+
+    #[test]
+    fn parses_projected_session_and_concurrency_ranges() {
+        assert_eq!(parse_bounded("sessions", None, 64, 1, 256).unwrap(), 64);
+        assert!(parse_bounded("sessions", Some("0".into()), 64, 1, 256).is_err());
+        assert!(parse_bounded("requests", Some("17".into()), 4, 1, 16).is_err());
     }
 }
