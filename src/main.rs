@@ -13,6 +13,7 @@ mod redact;
 mod relay;
 mod tunnel;
 
+use anyhow::Context as _;
 use std::io::Write as _;
 
 #[tokio::main]
@@ -48,17 +49,29 @@ async fn run() -> anyhow::Result<i32> {
             let debug = config.debug;
             let client = ai::OpenAiClient::new(config)?;
             let session = local_session::LocalShellSession::new(client, debug);
-            let answer = session
-                .execute(local_session::LocalRequest {
-                    mode: if continue_mode {
-                        local_session::RequestMode::Continue
-                    } else {
-                        local_session::RequestMode::New
-                    },
-                    context,
-                    input,
-                })
-                .await?;
+            // Register synchronously before execution can acquire the session lock.
+            let mut interrupt =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+                    .context("failed to register SIGINT handler")?;
+            let execution = session.execute(local_session::LocalRequest {
+                mode: if continue_mode {
+                    local_session::RequestMode::Continue
+                } else {
+                    local_session::RequestMode::New
+                },
+                context,
+                input,
+            });
+            // Cancellation is observed at async suspension points. Once synchronous
+            // persistence begins, it finishes before the pending signal is handled.
+            let answer = tokio::select! {
+                biased;
+                _ = interrupt.recv() => {
+                    let _ = writeln!(std::io::stderr(), "interrupted");
+                    return Ok(130);
+                }
+                result = execution => result?,
+            };
             print_answer(&answer)?;
             Ok(0)
         }
