@@ -408,6 +408,55 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn bootstrap_route_requires_auth_and_never_caches_or_embeds_credentials() {
+        let token = "a".repeat(64);
+        let app = app(RelayState::new(token.clone(), config()).unwrap());
+        for (authorization, expected) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (
+                Some(format!("Bearer {}", "b".repeat(64))),
+                StatusCode::UNAUTHORIZED,
+            ),
+            (Some(format!("Basic {token}")), StatusCode::UNAUTHORIZED),
+            (
+                Some(format!("Bearer {token} extra")),
+                StatusCode::UNAUTHORIZED,
+            ),
+            (Some(format!("bearer {token}")), StatusCode::OK),
+        ] {
+            let mut request = Request::builder().uri("/v1/bootstrap/sh");
+            if let Some(value) = authorization {
+                request = request.header("authorization", value);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            assert_eq!(response.headers()["cache-control"], "no-store");
+            if expected == StatusCode::OK {
+                assert_eq!(
+                    response.headers()["content-type"],
+                    "text/plain; charset=utf-8"
+                );
+            }
+            let bytes = axum::body::to_bytes(response.into_body(), 100_000)
+                .await
+                .unwrap();
+            let body = std::str::from_utf8(&bytes).unwrap();
+            assert!(!body.contains(&token));
+            if expected == StatusCode::OK {
+                assert!(body.starts_with("#!/bin/sh\nset -u\n"));
+                assert!(body.contains("SGPT_SESSION_TOKEN"));
+                assert!(!body.contains("__SGPT_SSH_"));
+            } else {
+                assert_eq!(body, "Unauthorized.");
+            }
+        }
+    }
+
     #[test]
     fn bearer_auth_accepts_case_insensitive_scheme_and_exact_token() {
         let token = "a".repeat(64);

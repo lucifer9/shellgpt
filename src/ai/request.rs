@@ -4,22 +4,24 @@ use crate::context::ContextBlock;
 use crate::conversation::{Conversation, InputAnchor, Turn, UserInput};
 use anyhow::ensure;
 use serde::Serialize;
+use std::borrow::Cow;
 use std::collections::HashSet;
+use std::io::{self, Write};
 
 const RECENT_TURN_LIMIT: usize = 10;
 const RECENT_TURN_BUDGET: usize = 200 * 1024;
 
 #[derive(Serialize)]
-struct ChatRequest {
-    model: String,
-    messages: Vec<ChatMessage>,
+struct ChatRequest<'a> {
+    model: &'a str,
+    messages: Vec<ChatMessage<'a>>,
     temperature: f64,
 }
 
 #[derive(Serialize)]
-struct ChatMessage {
-    role: String,
-    content: String,
+struct ChatMessage<'a> {
+    role: &'static str,
+    content: Cow<'a, str>,
 }
 
 pub(super) fn build_body(
@@ -28,9 +30,9 @@ pub(super) fn build_body(
     conversation: &Conversation,
     input: &UserInput,
 ) -> anyhow::Result<Vec<u8>> {
-    let mandatory = serialize(&render(config, context, input, &[], &[]))?;
+    let mandatory_len = serialized_len(&render(config, context, input, &[], &[]))?;
     ensure!(
-        mandatory.len() <= REQUEST_BODY_LIMIT,
+        mandatory_len <= REQUEST_BODY_LIMIT,
         "required AI request content exceeded 1 MiB limit."
     );
 
@@ -134,25 +136,25 @@ fn deduplicated_anchors<'a>(anchors: &[&'a InputAnchor], turns: &[&Turn]) -> Vec
         .collect()
 }
 
-fn render(
-    config: &AiConfig,
+fn render<'a>(
+    config: &'a AiConfig,
     context: &ContextBlock,
     input: &UserInput,
-    turns: &[&Turn],
+    turns: &[&'a Turn],
     anchors: &[&InputAnchor],
-) -> ChatRequest {
+) -> ChatRequest<'a> {
     let mut messages = vec![ChatMessage {
-        role: "system".into(),
-        content: system_prompt(config.system_prompt.as_deref(), context),
+        role: "system",
+        content: system_prompt(config.system_prompt.as_deref(), context).into(),
     }];
     for turn in turns {
         messages.push(ChatMessage {
-            role: "user".into(),
-            content: turn.user.rendered(),
+            role: "user",
+            content: turn.user.rendered().into(),
         });
         messages.push(ChatMessage {
-            role: "assistant".into(),
-            content: turn.assistant.content.clone(),
+            role: "assistant",
+            content: turn.assistant.content.as_str().into(),
         });
     }
     let mut current = input.rendered();
@@ -164,22 +166,38 @@ fn render(
         }
     }
     messages.push(ChatMessage {
-        role: "user".into(),
-        content: current,
+        role: "user",
+        content: current.into(),
     });
     ChatRequest {
-        model: config.model.clone(),
+        model: &config.model,
         messages,
         temperature: 0.2,
     }
 }
 
-fn serialize(request: &ChatRequest) -> anyhow::Result<Vec<u8>> {
+fn serialize(request: &ChatRequest<'_>) -> anyhow::Result<Vec<u8>> {
     Ok(serde_json::to_vec(request)?)
 }
 
-fn serialized_len(request: &ChatRequest) -> anyhow::Result<usize> {
-    Ok(serialize(request)?.len())
+fn serialized_len(request: &ChatRequest<'_>) -> anyhow::Result<usize> {
+    struct ByteCounter(usize);
+
+    impl Write for ByteCounter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    // Use the actual serializer so JSON escaping and UTF-8 count exactly as sent.
+    let mut counter = ByteCounter(0);
+    serde_json::to_writer(&mut counter, request)?;
+    Ok(counter.0)
 }
 
 fn system_prompt(extra: Option<&str>, context: &ContextBlock) -> String {
@@ -269,13 +287,14 @@ mod tests {
 
     #[test]
     fn latest_turn_then_anchors_then_only_fitting_older_suffix() {
+        let latest_answer = "latest-answer \"\\\n\t\0界🙂";
         let turns = vec![
             turn(0, "oldest", "", "oldest-answer"),
             turn(1, "older", "", "older-answer"),
-            turn(2, "latest", "", "latest-answer"),
+            turn(2, "latest", "", latest_answer),
         ];
         let anchors = vec![
-            anchor(0, "anchor-a", "stdin-a"),
+            anchor(0, "anchor-a", "stdin-a \"\\\n\t\0界🙂"),
             anchor(1, "anchor-b", "stdin-b"),
         ];
         let conversation = Conversation::from_parts(turns, anchors).unwrap();
@@ -285,14 +304,15 @@ mod tests {
         let recent = recent_turns(&conversation);
         let newest_two = [recent[1], recent[0]];
         let anchor_refs = conversation.anchors().iter().collect::<Vec<_>>();
-        let exact_size = serialized_len(&render(
+        let exact_size = serialize(&render(
             &config,
             &context,
             &empty,
             &newest_two,
             &anchor_refs,
         ))
-        .unwrap();
+        .unwrap()
+        .len();
         let input = UserInput::new("x".repeat(REQUEST_BODY_LIMIT - exact_size), "");
 
         let body = build_body(&config, &context, &conversation, &input).unwrap();
@@ -301,7 +321,7 @@ mod tests {
         assert_eq!(messages[1].1, "older");
         assert_eq!(messages[2].1, "older-answer");
         assert_eq!(messages[3].1, "latest");
-        assert_eq!(messages[4].1, "latest-answer");
+        assert_eq!(messages[4].1, latest_answer);
         assert!(messages.last().unwrap().1.contains("anchor-a"));
         assert!(messages.last().unwrap().1.contains("anchor-b"));
         assert!(!messages.iter().any(|message| message.1 == "oldest"));
@@ -380,7 +400,7 @@ mod tests {
     fn serialized_json_bytes_account_for_escaping_and_utf8() {
         let config = config();
         let context = ContextBlock::default();
-        let prefix = "quote=\" slash=\\ utf8=界 ";
+        let prefix = "quote=\" slash=\\ utf8=界🙂 control=\0\t\n ";
         let base = build_body(
             &config,
             &context,
