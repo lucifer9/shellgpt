@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -315,86 +315,43 @@ pub(super) struct SessionLock {
     path: PathBuf,
 }
 impl SessionLock {
-    pub(super) fn acquire(
-        session: &LocalSession,
-        request_id: &str,
-        mode: &str,
-    ) -> anyhow::Result<Self> {
+    pub(super) fn acquire(session: &LocalSession) -> anyhow::Result<Self> {
         let path = session.dir.join("lock");
-        match fs::create_dir(&path) {
-            Ok(()) => {
-                let initialized = (|| -> anyhow::Result<()> {
-                    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).with_context(
-                        || format!("failed to set permissions on {}", path.display()),
-                    )?;
-                    let metadata = format!(
-                        "pid={}\nrequest_id={request_id}\ncreated_at={}\nmode={mode}\n",
-                        std::process::id(),
-                        crate::conversation::timestamp()
-                    );
-                    atomic_write_0600(&path.join("metadata"), metadata.as_bytes())
-                        .with_context(|| format!("failed to initialize {}", path.display()))
-                })();
-                match initialized {
-                    Ok(()) => Ok(Self { path }),
-                    Err(initialization_error) => match remove_lock_dir(&path) {
-                        Ok(()) => Err(initialization_error),
-                        Err(cleanup_error) => bail!(
-                            "failed to initialize session lock at {}: {initialization_error:#}; cleanup also failed: {cleanup_error:#}",
-                            path.display()
-                        ),
-                    },
-                }
+        match fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => bail!(
+                "sgpt session is locked at {}. If you are sure it is stale, remove the lock directory: {}",
+                path.display(),
+                path.display()
+            ),
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to create session lock {}", path.display()));
             }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-                match fs::symlink_metadata(&path) {
-                    Ok(metadata) if metadata.file_type().is_dir() => bail!(
-                        "sgpt session is locked at {}. If you are sure it is stale, remove the lock directory and its contents: {}",
-                        path.display(),
-                        path.display()
-                    ),
-                    Ok(_) => bail!(
-                        "sgpt session lock path exists but is not a directory: {}. Inspect it before removing it.",
-                        path.display()
-                    ),
-                    Err(inspect_error) => Err(inspect_error).with_context(|| {
-                        format!("failed to inspect session lock path {}", path.display())
-                    }),
-                }
-            }
-            Err(err) => Err(err.into()),
         }
+        // Own the directory before writing metadata so Drop removes it if the write fails.
+        let lock = Self { path };
+        // Only read by people deciding whether a leftover lock is stale.
+        let metadata = format!(
+            "pid={}\ncreated_at={}\n",
+            std::process::id(),
+            crate::conversation::timestamp()
+        );
+        fs::write(lock.path.join("metadata"), metadata).with_context(|| {
+            format!("failed to initialize session lock {}", lock.path.display())
+        })?;
+        Ok(lock)
     }
 }
 impl Drop for SessionLock {
     fn drop(&mut self) {
-        if let Err(err) = remove_lock_dir(&self.path) {
+        if let Err(err) = fs::remove_dir_all(&self.path) {
             let _ = writeln!(
                 std::io::stderr(),
-                "warning: failed to remove session lock at {}: {err:#}",
+                "warning: failed to remove session lock at {}: {err}",
                 self.path.display()
             );
         }
-    }
-}
-
-fn remove_lock_dir(path: &Path) -> anyhow::Result<()> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => {
-            return Err(err).with_context(|| format!("failed to inspect {}", path.display()));
-        }
-    };
-    ensure!(
-        metadata.file_type().is_dir(),
-        "session lock path is not a directory: {}",
-        path.display()
-    );
-    match fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err).with_context(|| format!("failed to remove {}", path.display())),
     }
 }
 
@@ -577,58 +534,14 @@ mod tests {
     }
 
     #[test]
-    fn lock_directory_prevents_second_acquisition() {
+    fn lock_directory_prevents_second_acquisition_until_dropped() {
         let (_temp, session) = session();
-        let lock = SessionLock::acquire(&session, "0123456789abcdef", "normal").unwrap();
-        let error = SessionLock::acquire(&session, "0123456789abcdef", "normal")
-            .unwrap_err()
-            .to_string();
+        let lock = SessionLock::acquire(&session).unwrap();
+        let error = SessionLock::acquire(&session).unwrap_err().to_string();
         assert!(error.contains("session is locked"));
-        assert!(error.contains("remove the lock directory and its contents"));
-        assert!(!error.contains("rmdir"));
-        assert!(!error.contains("rm -r"));
         drop(lock);
-        assert!(SessionLock::acquire(&session, "0123456789abcdef", "normal").is_ok());
-    }
-
-    #[test]
-    fn non_directory_lock_path_gets_an_accurate_error() {
-        let (_temp, session) = session();
-        fs::write(session.dir().join("lock"), b"not a directory").unwrap();
-
-        let error = SessionLock::acquire(&session, "0123456789abcdef", "normal")
-            .unwrap_err()
-            .to_string();
-
-        assert!(error.contains("lock path exists but is not a directory"));
-        assert!(!error.contains("directory and its contents"));
-    }
-
-    #[test]
-    fn lock_cleanup_removes_all_contents() {
-        let temp = tempfile::tempdir().unwrap();
-        let lock = temp.path().join("lock");
-        fs::create_dir(&lock).unwrap();
-        fs::write(lock.join("metadata"), b"metadata").unwrap();
-        fs::create_dir(lock.join("extra")).unwrap();
-        fs::write(lock.join("extra").join("temporary"), b"temporary").unwrap();
-
-        remove_lock_dir(&lock).unwrap();
-
-        assert!(!lock.exists());
-        assert!(remove_lock_dir(&lock).is_ok());
-    }
-
-    #[test]
-    fn lock_cleanup_rejects_a_non_directory_path() {
-        let temp = tempfile::tempdir().unwrap();
-        let lock = temp.path().join("lock");
-        fs::write(&lock, b"not a directory").unwrap();
-
-        let error = remove_lock_dir(&lock).unwrap_err().to_string();
-
-        assert!(error.contains("session lock path is not a directory"));
-        assert!(lock.is_file());
+        assert!(!session.dir().join("lock").exists());
+        assert!(SessionLock::acquire(&session).is_ok());
     }
 
     #[test]

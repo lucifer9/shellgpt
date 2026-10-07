@@ -34,7 +34,7 @@ impl LocalShellSession {
         request_id: String,
         request: LocalRequest,
     ) -> anyhow::Result<String> {
-        let _lock = history::SessionLock::acquire(session, &request_id, request.mode.as_str())?;
+        let _lock = history::SessionLock::acquire(session)?;
         let (conversation_id, mut conversation) = match request.mode {
             AskMode::Continue => {
                 let current = history::read_current(session)?
@@ -334,7 +334,7 @@ mod tests {
 
         let release = accepted_rx.recv().await.unwrap();
         assert!(session.dir().join("lock").is_dir());
-        assert!(history::SessionLock::acquire(&session, "2222222222222222", "new").is_err());
+        assert!(history::SessionLock::acquire(&session).is_err());
         release.send(()).unwrap();
         assert!(transaction.await.unwrap().is_err());
         server.await.unwrap();
