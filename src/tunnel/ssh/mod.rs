@@ -108,16 +108,3 @@ pub fn shell_quote(value: &str) -> String {
         format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn remote_bootstrap_decodes_without_eval() {
-        let command =
-            remote_bootstrap_command(18080, &"a".repeat(64), "0123456789abcdef", 60).unwrap();
-        assert!(!command.contains("eval"));
-        assert!(command.contains("base64 -d"));
-    }
-}

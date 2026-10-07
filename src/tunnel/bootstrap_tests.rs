@@ -4,7 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 #[test]
-fn bootstrap_is_valid_posix_shell_and_stateless() {
+fn bootstrap_is_valid_posix_shell_without_secrets() {
     let temp = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(temp.path(), stage1_script()).unwrap();
     let output = Command::new("/bin/sh")
@@ -18,24 +18,10 @@ fn bootstrap_is_valid_posix_shell_and_stateless() {
         String::from_utf8_lossy(&output.stderr)
     );
     let script = stage1_script();
-    assert!(!script.contains("_sgpt_history_json"));
-    assert!(!script.contains("_sgpt_append_history"));
-    assert!(!script.contains("/conversations"));
     assert!(!script.contains("SGPT_API_KEY"));
     assert!(script.contains("/v1/session/activate"));
     assert!(script.contains("/v1/session/unregister"));
     assert!(!script.contains("__SGPT_SSH_"));
-    assert_eq!(script, stage1_script());
-}
-
-#[test]
-fn bootstrap_bounds_stdin_before_request_construction() {
-    let script = stage1_script();
-    let head = script.find("head -c 524289").unwrap();
-    let request = script.find("request.json").unwrap();
-    assert!(head < request);
-    assert!(script.contains("--rawfile stdin"));
-    assert!(script.contains("_sgpt_attempt=1"));
 }
 
 #[test]

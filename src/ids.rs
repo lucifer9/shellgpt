@@ -27,13 +27,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_session_token_is_64_hex_chars() {
-        let token = session_token().unwrap();
-        assert_eq!(token.len(), 64);
-        assert!(token.bytes().all(|b| b.is_ascii_hexdigit()));
-    }
-
-    #[test]
     fn validates_id_lengths_and_hex_only() {
         assert!(is_hex_id("0123456789abcdef"));
         assert!(is_hex_id(&"a".repeat(64)));

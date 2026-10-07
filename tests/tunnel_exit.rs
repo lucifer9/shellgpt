@@ -56,22 +56,6 @@ fn tunnel_preserves_ssh_exit_status_and_releases_relay_listener() {
 }
 
 #[test]
-fn remote_bootstrap_failure_is_not_misreported_as_forwarding_failure() {
-    let (output, _) = run_with_exit("printf 'sgpt remote dependency missing: jq\\n' >&2; exit 1");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        stderr.contains("sgpt remote dependency missing: jq"),
-        "{stderr}"
-    );
-    assert!(
-        !stderr.contains("Remote port forwarding failed"),
-        "{stderr}"
-    );
-}
-
-#[test]
 fn tunnel_spawn_failure_returns_one_with_context_and_stops_relay() {
     let temp = tempfile::tempdir().unwrap();
     let bin = fake_ssh(

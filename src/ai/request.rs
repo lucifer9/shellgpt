@@ -273,19 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn required_content_over_limit_fails() {
-        let error = build_body(
-            &config(),
-            &ContextBlock::default(),
-            &Conversation::default(),
-            &UserInput::new("x".repeat(REQUEST_BODY_LIMIT), ""),
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(error.contains("required"));
-    }
-
-    #[test]
     fn latest_turn_then_anchors_then_only_fitting_older_suffix() {
         let latest_answer = "latest-answer \"\\\n\t\0界🙂";
         let turns = vec![
@@ -397,7 +384,7 @@ mod tests {
     }
 
     #[test]
-    fn serialized_json_bytes_account_for_escaping_and_utf8() {
+    fn exact_serialized_limit_succeeds_and_one_byte_more_fails() {
         let config = config();
         let context = ContextBlock::default();
         let prefix = "quote=\" slash=\\ utf8=界🙂 control=\0\t\n ";
@@ -408,44 +395,17 @@ mod tests {
             &UserInput::new(prefix, ""),
         )
         .unwrap();
-        let input = UserInput::new(
-            format!("{prefix}{}", "x".repeat(REQUEST_BODY_LIMIT - base.len())),
-            "",
-        );
+        let padding = REQUEST_BODY_LIMIT - base.len();
+        let input = UserInput::new(format!("{prefix}{}", "x".repeat(padding)), "");
         let body = build_body(&config, &context, &Conversation::default(), &input).unwrap();
         assert_eq!(body.len(), REQUEST_BODY_LIMIT);
         let text = String::from_utf8(body).unwrap();
         assert!(text.contains("quote=\\\" slash=\\\\ utf8=界"));
-    }
 
-    #[test]
-    fn exact_limit_succeeds_and_one_byte_more_fails() {
-        let config = config();
-        let context = ContextBlock::default();
-        let empty = build_body(
-            &config,
-            &context,
-            &Conversation::default(),
-            &UserInput::new("", ""),
-        )
-        .unwrap();
-        let exact_len = REQUEST_BODY_LIMIT - empty.len();
-        let exact = build_body(
-            &config,
-            &context,
-            &Conversation::default(),
-            &UserInput::new("x".repeat(exact_len), ""),
-        )
-        .unwrap();
-        assert_eq!(exact.len(), REQUEST_BODY_LIMIT);
-        let error = build_body(
-            &config,
-            &context,
-            &Conversation::default(),
-            &UserInput::new("x".repeat(exact_len + 1), ""),
-        )
-        .unwrap_err()
-        .to_string();
+        let oversized = UserInput::new(format!("{prefix}{}", "x".repeat(padding + 1)), "");
+        let error = build_body(&config, &context, &Conversation::default(), &oversized)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("required"));
     }
 }

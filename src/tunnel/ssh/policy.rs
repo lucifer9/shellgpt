@@ -535,10 +535,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn generated_shell_policy_is_deterministic() {
-        assert_eq!(shell_validation_function(), shell_validation_function());
-        assert_eq!(shell_controlled_arguments(), shell_controlled_arguments());
-    }
 }

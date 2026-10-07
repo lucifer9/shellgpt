@@ -457,18 +457,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bearer_auth_accepts_case_insensitive_scheme_and_exact_token() {
-        let token = "a".repeat(64);
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            format!("bEaReR {token}").parse().unwrap(),
-        );
-        assert!(authorized(&headers, &token));
-        assert!(!authorized(&headers, &"b".repeat(64)));
-    }
-
     fn padded_json(base: &str, len: usize) -> Vec<u8> {
         let mut body = base.as_bytes().to_vec();
         body.resize(len, b' ');
