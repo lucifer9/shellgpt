@@ -1,18 +1,15 @@
 use std::net::TcpListener;
-use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 mod common;
-use common::{chat_response, read_http_request, write_http_response};
+use common::{chat_response, private_runtime_dir, read_http_request, write_http_response};
 
 #[test]
 fn provider_success_with_persistence_failure_prints_nothing_and_creates_no_current() {
     let temp = tempfile::tempdir().unwrap();
     let cwd = temp.path().join("cwd");
-    let runtime = temp.path().join("runtime");
     std::fs::create_dir(&cwd).unwrap();
-    std::fs::create_dir(&runtime).unwrap();
-    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let runtime = private_runtime_dir(temp.path());
 
     let application_runtime = runtime.join("sgpt");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

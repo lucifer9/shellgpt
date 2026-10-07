@@ -2,6 +2,16 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+
+/// sgpt only uses XDG_RUNTIME_DIR when the directory is private (mode 0700).
+pub fn private_runtime_dir(parent: &Path) -> PathBuf {
+    let runtime = parent.join("runtime");
+    std::fs::create_dir(&runtime).unwrap();
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    runtime
+}
 
 pub fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
     let mut bytes = Vec::new();

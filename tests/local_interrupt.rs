@@ -1,6 +1,5 @@
 use std::io::{self, Read};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -8,7 +7,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 mod common;
-use common::read_http_request;
+use common::{private_runtime_dir, read_http_request};
 
 const DEADLINE: Duration = Duration::from_secs(10);
 
@@ -122,13 +121,12 @@ fn lock_dir(xdg: &Path) -> Option<PathBuf> {
 #[test]
 fn ctrl_c_releases_the_session_lock_and_exits_130() {
     let temp = tempfile::tempdir().unwrap();
-    // local_runtime_base only honors XDG_RUNTIME_DIR when it is private.
-    std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let runtime = private_runtime_dir(temp.path());
     let provider = hanging_provider();
     let mut command = Command::new(env!("CARGO_BIN_EXE_sgpt"));
     command
         .arg("hello")
-        .env("XDG_RUNTIME_DIR", temp.path())
+        .env("XDG_RUNTIME_DIR", &runtime)
         .env("SGPT_BASE_URL", &provider.endpoint)
         .env("SGPT_API_KEY", "key")
         .env("SGPT_MODEL", "model")
@@ -159,7 +157,7 @@ fn ctrl_c_releases_the_session_lock_and_exits_130() {
         .received
         .recv_timeout(DEADLINE)
         .expect("provider must receive a complete request");
-    let lock = lock_dir(temp.path()).expect("session lock must exist while request is in flight");
+    let lock = lock_dir(&runtime).expect("session lock must exist while request is in flight");
     let session_dir = lock.parent().unwrap().to_path_buf();
 
     let status = Command::new("kill")

@@ -1,11 +1,10 @@
 use std::io::Write;
 use std::net::TcpListener;
-use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 
 mod common;
-use common::{chat_response, read_http_request, write_http_response};
+use common::{chat_response, private_runtime_dir, read_http_request, write_http_response};
 
 #[test]
 fn local_binary_accepts_stdin_only_for_new_and_continue() {
@@ -22,9 +21,7 @@ fn local_binary_accepts_stdin_only_for_new_and_continue() {
     });
 
     let temp = tempfile::tempdir().unwrap();
-    let runtime = temp.path().join("runtime");
-    std::fs::create_dir(&runtime).unwrap();
-    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let runtime = private_runtime_dir(temp.path());
 
     let first = run_sgpt(address, temp.path(), &runtime, &[], b"first stdin");
     assert!(
