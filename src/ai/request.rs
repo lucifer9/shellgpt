@@ -216,37 +216,11 @@ fn system_prompt(extra: Option<&str>, context: &ContextBlock) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::conversation::{AssistantResponse, InputAnchor, Turn};
-    use std::time::Duration;
+    use crate::conversation::InputAnchor;
+    use crate::test_support::{ai_config, turn};
 
     fn config() -> AiConfig {
-        AiConfig {
-            endpoint: "https://api.example.com/v1/chat/completions".into(),
-            api_key: "sk-test".into(),
-            model: "test-model".into(),
-            system_prompt: Some("extra".into()),
-            proxy: None,
-            timeout: Duration::from_secs(60),
-            debug: false,
-            max_projected_sessions: 64,
-            max_concurrent_requests: 4,
-        }
-    }
-
-    fn turn(id: usize, instruction: &str, stdin: &str, answer: &str) -> Turn {
-        Turn {
-            request_id: format!("{id:016x}"),
-            request_digest: format!("digest-{id}"),
-            user: UserInput {
-                instruction: instruction.into(),
-                stdin: stdin.into(),
-                timestamp: format!("user-{id}"),
-            },
-            assistant: AssistantResponse {
-                content: answer.into(),
-                timestamp: format!("assistant-{id}"),
-            },
-        }
+        ai_config("https://api.example.com/v1/chat/completions")
     }
 
     fn anchor(id: usize, instruction: &str, stdin: &str) -> InputAnchor {
@@ -276,9 +250,9 @@ mod tests {
     fn latest_turn_then_anchors_then_only_fitting_older_suffix() {
         let latest_answer = "latest-answer \"\\\n\t\0界🙂";
         let turns = vec![
-            turn(0, "oldest", "", "oldest-answer"),
-            turn(1, "older", "", "older-answer"),
-            turn(2, "latest", "", latest_answer),
+            turn(0, "", "oldest-answer"),
+            turn(1, "", "older-answer"),
+            turn(2, "", latest_answer),
         ];
         let anchors = vec![
             anchor(0, "anchor-a", "stdin-a \"\\\n\t\0界🙂"),
@@ -305,19 +279,19 @@ mod tests {
         let body = build_body(&config, &context, &conversation, &input).unwrap();
         assert_eq!(body.len(), REQUEST_BODY_LIMIT);
         let messages = messages(&body);
-        assert_eq!(messages[1].1, "older");
+        assert_eq!(messages[1].1, "instruction-1");
         assert_eq!(messages[2].1, "older-answer");
-        assert_eq!(messages[3].1, "latest");
+        assert_eq!(messages[3].1, "instruction-2");
         assert_eq!(messages[4].1, latest_answer);
         assert!(messages.last().unwrap().1.contains("anchor-a"));
         assert!(messages.last().unwrap().1.contains("anchor-b"));
-        assert!(!messages.iter().any(|message| message.1 == "oldest"));
+        assert!(!messages.iter().any(|message| message.1 == "instruction-0"));
     }
 
     #[test]
     fn request_never_includes_half_a_turn() {
         let conversation = Conversation::from_parts(
-            vec![turn(0, "large-user", "", &"a".repeat(300_000))],
+            vec![turn(0, "", &"a".repeat(300_000))],
             Vec::new(),
         )
         .unwrap();
@@ -340,7 +314,7 @@ mod tests {
         .unwrap();
         let messages = messages(&body);
         assert_eq!(messages.len(), 2);
-        assert!(!messages.iter().any(|message| message.1 == "large-user"));
+        assert!(!messages.iter().any(|message| message.1 == "instruction-0"));
         assert!(!messages.iter().any(|message| message.1.len() == 300_000));
     }
 
@@ -348,12 +322,12 @@ mod tests {
     fn anchors_are_deduplicated_against_every_selected_recent_turn() {
         let conversation = Conversation::from_parts(
             vec![
-                turn(0, "older", "same-older", "answer-0"),
-                turn(1, "latest", "same-latest", "answer-1"),
+                turn(0, "same-older", "answer-0"),
+                turn(1, "same-latest", "answer-1"),
             ],
             vec![
-                anchor(0, "older", "same-older"),
-                anchor(1, "latest", "same-latest"),
+                anchor(0, "instruction-0", "same-older"),
+                anchor(1, "instruction-1", "same-latest"),
                 anchor(2, "unique", "unique-stdin"),
             ],
         )

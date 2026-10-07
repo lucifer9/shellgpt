@@ -326,29 +326,14 @@ pub fn timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn turn(id: usize, stdin: &str, assistant_size: usize) -> Turn {
-        Turn {
-            request_id: format!("{id:016x}"),
-            request_digest: format!("digest-{id}"),
-            user: UserInput {
-                instruction: format!("instruction-{id}"),
-                stdin: stdin.into(),
-                timestamp: format!("time-{id}"),
-            },
-            assistant: AssistantResponse {
-                content: "a".repeat(assistant_size),
-                timestamp: format!("answer-{id}"),
-            },
-        }
-    }
+    use crate::test_support::turn;
 
     #[test]
     fn compact_keeps_newest_turn_and_complete_turns() {
         let mut conversation = Conversation::default();
         for id in 0..7 {
             conversation
-                .commit(turn(id, if id == 0 { "old stdin" } else { "" }, 300_000))
+                .commit(turn(id, if id == 0 { "old stdin" } else { "" }, &"a".repeat(300_000)))
                 .unwrap();
         }
         assert!(conversation.logical_bytes() <= LOGICAL_LOW_WATER);
@@ -367,12 +352,12 @@ mod tests {
     #[test]
     fn idempotency_replays_same_digest_and_rejects_conflict() {
         let mut conversation = Conversation::default();
-        conversation.commit(turn(1, "", 1)).unwrap();
+        conversation.commit(turn(1, "", "a")).unwrap();
         assert!(matches!(
-            conversation.commit(turn(1, "", 1)).unwrap(),
+            conversation.commit(turn(1, "", "a")).unwrap(),
             CommitResult::Replayed(_)
         ));
-        let mut conflict = turn(1, "", 1);
+        let mut conflict = turn(1, "", "a");
         conflict.request_digest = "different".into();
         assert!(conversation.commit(conflict).is_err());
         assert_eq!(conversation.turns().len(), 1);

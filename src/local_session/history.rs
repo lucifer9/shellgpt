@@ -512,28 +512,13 @@ fn hash32(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::turn;
 
     fn session() -> (tempfile::TempDir, LocalSession) {
         let temp = tempfile::tempdir().unwrap();
         secure_dir(&temp.path().join("conversations")).unwrap();
         let session = LocalSession::at_for_tests(temp.path().to_path_buf());
         (temp, session)
-    }
-
-    fn short_turn(id: usize, stdin: &str) -> Turn {
-        Turn {
-            request_id: format!("{id:016x}"),
-            request_digest: format!("digest-{id}"),
-            user: UserInput {
-                instruction: format!("instruction-{id}"),
-                stdin: stdin.into(),
-                timestamp: format!("user-{id}"),
-            },
-            assistant: AssistantResponse {
-                content: "ok".into(),
-                timestamp: format!("assistant-{id}"),
-            },
-        }
     }
 
     #[test]
@@ -545,12 +530,7 @@ mod tests {
         let before = load_conversation(&session, id).unwrap();
         let mut after = before.clone();
         after
-            .commit(Turn {
-                request_id: "1111111111111111".into(),
-                request_digest: "d".into(),
-                user: UserInput::new("next", ""),
-                assistant: AssistantResponse::new("answer"),
-            })
+            .commit(turn(100, "", "ok"))
             .unwrap();
         save_conversation(&session, id, &before, &after).unwrap();
         let text = fs::read_to_string(path).unwrap();
@@ -576,12 +556,7 @@ mod tests {
         let before = Conversation::default();
         let mut after = before.clone();
         after
-            .commit(Turn {
-                request_id: "1111111111111111".into(),
-                request_digest: "d".into(),
-                user: UserInput::new("hi", ""),
-                assistant: AssistantResponse::new("hello"),
-            })
+            .commit(turn(1, "", "ok"))
             .unwrap();
         save_conversation(&session, id, &before, &after).unwrap();
         assert_eq!(load_conversation(&session, id).unwrap().turns().len(), 1);
@@ -627,7 +602,7 @@ mod tests {
         assert_eq!(before.anchors().last().unwrap().timestamp, "time-10");
 
         let mut after = before.clone();
-        after.commit(short_turn(100, "")).unwrap();
+        after.commit(turn(100, "", "ok")).unwrap();
         save_conversation(&session, id, &before, &after).unwrap();
 
         let persisted = fs::read(&path).unwrap();
@@ -701,7 +676,7 @@ mod tests {
     #[test]
     fn physical_size_compaction_preserves_turn_boundaries_and_stdin_anchor() {
         let turns = (0..40)
-            .map(|id| short_turn(id, if id == 0 { "important stdin" } else { "" }))
+            .map(|id| turn(id, if id == 0 { "important stdin" } else { "" }, "ok"))
             .collect::<Vec<_>>();
         let conversation = Conversation::from_parts(turns, Vec::new()).unwrap();
         let (persisted, bytes, compacted) =
@@ -726,12 +701,12 @@ mod tests {
         let (_temp, session) = session();
         let id = "0123456789abcdef";
         let before = Conversation::from_parts(
-            (0..39).map(|turn_id| short_turn(turn_id, "")).collect(),
+            (0..39).map(|turn_id| turn(turn_id, "", "ok")).collect(),
             Vec::new(),
         )
         .unwrap();
         let after = Conversation::from_parts(
-            (0..40).map(|turn_id| short_turn(turn_id, "")).collect(),
+            (0..40).map(|turn_id| turn(turn_id, "", "ok")).collect(),
             Vec::new(),
         )
         .unwrap();
@@ -742,7 +717,7 @@ mod tests {
 
         let persisted = load_conversation(&session, id).unwrap();
         let mut appended = persisted.clone();
-        appended.commit(short_turn(100, "")).unwrap();
+        appended.commit(turn(100, "", "ok")).unwrap();
         save_conversation_with_limits(&session, id, &persisted, &appended, 2_500, 3_000).unwrap();
         assert_eq!(
             load_conversation(&session, id)
@@ -767,7 +742,7 @@ mod tests {
         let after = Conversation::from_parts(
             vec![Turn {
                 assistant: AssistantResponse::new("x".repeat(2_000)),
-                ..short_turn(1, "")
+                ..turn(1, "", "ok")
             }],
             Vec::new(),
         )

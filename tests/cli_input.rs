@@ -1,8 +1,11 @@
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
+
+mod common;
+use common::{chat_response, read_http_request, write_http_response};
 
 #[test]
 fn local_binary_accepts_stdin_only_for_new_and_continue() {
@@ -14,14 +17,7 @@ fn local_binary_accepts_stdin_only_for_new_and_continue() {
             let (mut stream, _) = listener.accept().unwrap();
             let request = read_http_request(&mut stream);
             sender.send(request).unwrap();
-            let body = format!(r#"{{"choices":[{{"message":{{"content":"{answer}"}}}}]}}"#);
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            )
-            .unwrap();
+            write_http_response(&mut stream, &chat_response(answer));
         }
     });
 
@@ -89,34 +85,4 @@ fn run_sgpt(
         .unwrap();
     child.stdin.take().unwrap().write_all(stdin).unwrap();
     child.wait_with_output().unwrap()
-}
-
-fn read_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    let mut buffer = [0_u8; 4096];
-    let header_end = loop {
-        let count = stream.read(&mut buffer).unwrap();
-        assert!(count > 0);
-        bytes.extend_from_slice(&buffer[..count]);
-        if let Some(position) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break position + 4;
-        }
-    };
-    let headers = String::from_utf8_lossy(&bytes[..header_end]);
-    let content_length = headers
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("content-length: ")
-                .or_else(|| line.strip_prefix("Content-Length: "))
-        })
-        .unwrap()
-        .trim()
-        .parse::<usize>()
-        .unwrap();
-    while bytes.len() < header_end + content_length {
-        let count = stream.read(&mut buffer).unwrap();
-        assert!(count > 0);
-        bytes.extend_from_slice(&buffer[..count]);
-    }
-    bytes[header_end..header_end + content_length].to_vec()
 }

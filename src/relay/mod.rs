@@ -388,24 +388,20 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 mod tests {
     use super::*;
     use axum::http::Request;
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
     use tokio::sync::{mpsc, oneshot};
     use tower::ServiceExt;
 
+    use crate::test_support::{ai_config, chat_body, http_response, provider};
+
     fn config() -> AiConfig {
-        AiConfig {
-            endpoint: "http://127.0.0.1/v1/chat/completions".into(),
-            api_key: "key".into(),
-            model: "m".into(),
-            system_prompt: None,
-            proxy: None,
-            timeout: Duration::from_secs(1),
-            debug: false,
-            max_projected_sessions: 2,
-            max_concurrent_requests: 1,
-        }
+        let mut cfg = ai_config("http://127.0.0.1/v1/chat/completions");
+        cfg.max_projected_sessions = 2;
+        cfg.max_concurrent_requests = 1;
+        cfg.timeout = Duration::from_secs(1);
+        cfg
     }
 
     #[tokio::test]
@@ -505,18 +501,10 @@ mod tests {
                     let (release_tx, release_rx) = oneshot::channel();
                     accepted_tx.send(release_tx).await.unwrap();
                     let _ = release_rx.await;
-                    let body = br#"{"choices":[{"message":{"content":"answer"}}]}"#;
                     stream
-                        .write_all(
-                            format!(
-                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n",
-                                body.len()
-                            )
-                            .as_bytes(),
-                        )
+                        .write_all(&http_response("200 OK", &chat_body("answer")))
                         .await
                         .unwrap();
-                    stream.write_all(body).await.unwrap();
                 }));
             }
             for handler in handlers {
@@ -799,30 +787,9 @@ mod tests {
 
     #[tokio::test]
     async fn relay_idempotency_commits_once() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let server_calls = calls.clone();
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            server_calls.fetch_add(1, AtomicOrdering::SeqCst);
-            let mut request = [0_u8; 4096];
-            let _ = stream.read(&mut request).await;
-            let body = br#"{"choices":[{"message":{"content":"answer"}}]}"#;
-            stream
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n",
-                        body.len()
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
-            stream.write_all(body).await.unwrap();
-        });
+        let (endpoint, server) = provider("200 OK", chat_body("answer")).await;
         let mut provider_config = config();
-        provider_config.endpoint = format!("http://{address}/v1/chat/completions");
+        provider_config.endpoint = endpoint;
         let token = "a".repeat(64);
         let state = RelayState::new(token.clone(), provider_config).unwrap();
         state.create_root("0123456789abcdef".into()).await.unwrap();
@@ -845,6 +812,6 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
         }
-        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+        server.abort();
     }
 }

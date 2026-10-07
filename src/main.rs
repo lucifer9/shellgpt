@@ -11,6 +11,8 @@ mod local_session;
 mod projection;
 mod redact;
 mod relay;
+#[cfg(test)]
+mod test_support;
 mod tunnel;
 
 use anyhow::Context as _;

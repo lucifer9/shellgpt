@@ -1,7 +1,9 @@
-use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
+
+mod common;
+use common::{chat_response, read_http_request, write_http_response};
 
 #[test]
 fn provider_success_with_persistence_failure_prints_nothing_and_creates_no_current() {
@@ -17,17 +19,9 @@ fn provider_success_with_persistence_failure_prints_nothing_and_creates_no_curre
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        let mut request = [0_u8; 8192];
-        let _ = stream.read(&mut request).unwrap();
+        let _ = read_http_request(&mut stream);
         std::fs::remove_dir_all(&application_runtime).unwrap();
-        let body = br#"{"choices":[{"message":{"content":"must not print"}}]}"#;
-        write!(
-            stream,
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n",
-            body.len()
-        )
-        .unwrap();
-        stream.write_all(body).unwrap();
+        write_http_response(&mut stream, &chat_response("must not print"));
     });
 
     let output = Command::new(env!("CARGO_BIN_EXE_sgpt"))

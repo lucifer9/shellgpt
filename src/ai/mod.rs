@@ -92,28 +92,14 @@ pub fn parse_chat_response(bytes: &[u8]) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use crate::test_support::ai_config;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
-
-    fn config() -> AiConfig {
-        AiConfig {
-            endpoint: "https://api.example.com/v1/chat/completions".into(),
-            api_key: "sk-test".into(),
-            model: "test-model".into(),
-            system_prompt: Some("extra".into()),
-            proxy: None,
-            timeout: Duration::from_secs(60),
-            debug: false,
-            max_projected_sessions: 64,
-            max_concurrent_requests: 4,
-        }
-    }
 
     #[test]
     fn serializes_openai_compatible_request() {
         let body = request::build_body(
-            &config(),
+            &ai_config("https://api.example.com/v1/chat/completions"),
             &ContextBlock {
                 cwd: "/tmp".into(),
                 ..Default::default()
@@ -162,9 +148,8 @@ mod tests {
                 }
             }
         });
-        let mut config = config();
-        config.endpoint = format!("http://{address}/v1/chat/completions");
-        let client = OpenAiClient::new(config).unwrap();
+        let client =
+            OpenAiClient::new(ai_config(format!("http://{address}/v1/chat/completions"))).unwrap();
         let err = client
             .ask(
                 &ContextBlock::default(),

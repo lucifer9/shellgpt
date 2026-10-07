@@ -7,6 +7,9 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+mod common;
+use common::read_http_request;
+
 const DEADLINE: Duration = Duration::from_secs(10);
 
 struct ChildGuard {
@@ -80,83 +83,6 @@ fn accept_with_deadline(listener: &TcpListener) -> Result<TcpStream, String> {
     }
 }
 
-fn read_complete_http_request(stream: &mut TcpStream) -> Result<(), String> {
-    stream
-        .set_read_timeout(Some(Duration::from_millis(200)))
-        .map_err(|err| err.to_string())?;
-    let deadline = Instant::now() + DEADLINE;
-    let mut request = Vec::new();
-    let mut buffer = [0_u8; 8192];
-
-    let header_end = loop {
-        if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
-            break index + 4;
-        }
-        if request.len() > 64 * 1024 {
-            return Err("provider request headers exceeded 64 KiB".into());
-        }
-        match stream.read(&mut buffer) {
-            Ok(0) => return Err("provider connection closed before request headers".into()),
-            Ok(read) => request.extend_from_slice(&buffer[..read]),
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) && Instant::now() < deadline => {}
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                return Err("provider request headers timed out".into());
-            }
-            Err(err) => return Err(format!("failed to read provider request headers: {err}")),
-        }
-    };
-
-    let headers = std::str::from_utf8(&request[..header_end])
-        .map_err(|err| format!("provider request headers were not UTF-8: {err}"))?;
-    let content_length = headers
-        .lines()
-        .find_map(|line| {
-            let (name, value) = line.split_once(':')?;
-            name.eq_ignore_ascii_case("content-length")
-                .then(|| value.trim())
-        })
-        .ok_or_else(|| "provider request omitted Content-Length".to_string())?
-        .parse::<usize>()
-        .map_err(|err| format!("invalid provider Content-Length: {err}"))?;
-    let total = header_end
-        .checked_add(content_length)
-        .ok_or_else(|| "provider request length overflowed".to_string())?;
-    if total > 2 * 1024 * 1024 {
-        return Err("provider request exceeded 2 MiB".into());
-    }
-
-    while request.len() < total {
-        match stream.read(&mut buffer) {
-            Ok(0) => return Err("provider connection closed before request body".into()),
-            Ok(read) => request.extend_from_slice(&buffer[..read]),
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) && Instant::now() < deadline => {}
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                return Err("provider request body timed out".into());
-            }
-            Err(err) => return Err(format!("failed to read provider request body: {err}")),
-        }
-    }
-    Ok(())
-}
-
 fn wait_for_peer_close(stream: &mut TcpStream) -> Result<(), String> {
     let deadline = Instant::now() + DEADLINE;
     let mut buffer = [0_u8; 1024];
@@ -210,9 +136,15 @@ fn hanging_provider() -> HangingProvider {
                 return Err(err);
             }
         };
-        if let Err(err) = read_complete_http_request(&mut stream) {
-            let _ = received_tx.send(Err(err.clone()));
-            return Err(err);
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .map_err(|err| err.to_string())?;
+        if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = read_http_request(&mut stream);
+        })) {
+            let msg = format!("failed to read provider request: {:?}", err);
+            let _ = received_tx.send(Err(msg.clone()));
+            return Err(msg);
         }
         received_tx
             .send(Ok(()))
