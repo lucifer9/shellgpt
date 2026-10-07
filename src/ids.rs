@@ -18,10 +18,6 @@ pub fn is_hex_id(value: &str) -> bool {
     (16..=64).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-pub fn is_session_token(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

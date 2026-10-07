@@ -279,18 +279,12 @@ async fn prepare_tunnel(
     {
         return plain(StatusCode::CONFLICT, err.to_string());
     }
-    let command = match crate::tunnel::ssh::remote_bootstrap_command(
+    let command = crate::tunnel::ssh::remote_bootstrap_command(
         state.bootstrap_port,
         &state.token,
         &child,
         state.timeout_seconds,
-    ) {
-        Ok(command) => command,
-        Err(err) => {
-            let _ = state.tree.cancel_pending(&child).await;
-            return plain(StatusCode::INTERNAL_SERVER_ERROR, err.to_string());
-        }
-    };
+    );
     json(
         StatusCode::OK,
         &PrepareResponse {
@@ -344,9 +338,7 @@ fn authorized(headers: &HeaderMap, token: &str) -> bool {
     let (Some(scheme), Some(candidate), None) = (parts.next(), parts.next(), parts.next()) else {
         return false;
     };
-    scheme.eq_ignore_ascii_case("bearer")
-        && ids::is_session_token(candidate)
-        && constant_time_eq(candidate, token)
+    scheme.eq_ignore_ascii_case("bearer") && constant_time_eq(candidate, token)
 }
 fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
@@ -682,30 +674,6 @@ mod tests {
                 .await
                 .unwrap(),
             crate::error::ERR_NO_PREVIOUS
-        );
-    }
-
-    #[tokio::test]
-    async fn prepare_command_failure_cancels_reserved_child_through_projection_module() {
-        let token = "a".repeat(64);
-        let mut invalid_timeout = config();
-        invalid_timeout.timeout = Duration::from_secs(601);
-        let state = RelayState::new(token.clone(), invalid_timeout).unwrap();
-        state.create_root("0123456789abcdef".into()).await.unwrap();
-        state.tree.activate("0123456789abcdef").await.unwrap();
-        let router = app(state.clone());
-        let body = br#"{"parent_session_id":"0123456789abcdef","ssh_args":["host"],"effective_config":""}"#;
-
-        let response = post_body(router, "/v1/tunnel/prepare", &token, body.to_vec()).await;
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let snapshot = state.tree.snapshot().await;
-        assert_eq!(snapshot.len(), 1);
-        assert!(
-            snapshot
-                .session("0123456789abcdef")
-                .unwrap()
-                .children
-                .is_empty()
         );
     }
 

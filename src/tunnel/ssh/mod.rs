@@ -4,7 +4,6 @@ mod process;
 use crate::config::{AiConfig, parse_tunnel_port};
 use crate::ids;
 use crate::relay::{RelayState, app, bind_loopback};
-use anyhow::ensure;
 use base64::Engine;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,7 +23,7 @@ pub async fn run_tunnel(ssh_args: Vec<String>, config: AiConfig) -> anyhow::Resu
     let token = ids::session_token()?;
     let session_id = ids::id128()?;
     let remote_command =
-        remote_bootstrap_command(actual_port, &token, &session_id, config.timeout.as_secs())?;
+        remote_bootstrap_command(actual_port, &token, &session_id, config.timeout.as_secs());
     let relay_state =
         RelayState::new(token.clone(), config.clone())?.with_bootstrap_port(actual_port);
     relay_state.create_root(session_id).await?;
@@ -72,10 +71,7 @@ pub fn remote_bootstrap_command(
     token: &str,
     session_id: &str,
     timeout_seconds: u64,
-) -> anyhow::Result<String> {
-    ensure!(ids::is_session_token(token), "invalid session token");
-    ensure!(ids::is_hex_id(session_id), "invalid session id");
-    ensure!((1..=600).contains(&timeout_seconds), "invalid timeout");
+) -> String {
     let script = super::bootstrap::stage1_script();
     let b64 = base64::engine::general_purpose::STANDARD.encode(script.as_bytes());
     let mut env = vec![
@@ -94,9 +90,7 @@ pub fn remote_bootstrap_command(
         .map(|(key, value)| format!("{key}={}", shell_quote(&value)))
         .collect::<Vec<_>>()
         .join(" ");
-    Ok(format!(
-        "{assignments} sh -c 'sh -c \"$(printf %s \"$SGPT_STAGE1_B64\" | base64 -d)\"'"
-    ))
+    format!("{assignments} sh -c 'sh -c \"$(printf %s \"$SGPT_STAGE1_B64\" | base64 -d)\"'")
 }
 
 pub fn shell_quote(value: &str) -> String {
