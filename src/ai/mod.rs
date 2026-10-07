@@ -73,7 +73,6 @@ async fn read_bounded_response(mut response: reqwest::Response) -> anyhow::Resul
 }
 
 pub fn parse_chat_response(bytes: &[u8]) -> anyhow::Result<String> {
-    ensure!(bytes.len() <= RESPONSE_BODY_LIMIT, ERR_AI_BODY_TOO_LARGE);
     let value: serde_json::Value = serde_json::from_slice(bytes)?;
     let Some(content) = value
         .get("choices")

@@ -88,33 +88,27 @@ pub(super) fn validate(args: &[String]) -> anyhow::Result<ValidatedArgs> {
     })
 }
 
-pub(super) fn validate_effective(
-    _args: &ValidatedArgs,
-    effective: &str,
-    relay_port: Option<u16>,
-) -> anyhow::Result<()> {
+pub(super) fn validate_effective(effective: &str, relay_port: u16) -> anyhow::Result<()> {
     ensure!(
         effective.len() <= SSH_CONFIG_LIMIT,
         "ssh -G output exceeded 256 KiB limit."
     );
-    if let Some(port) = relay_port {
-        for line in effective.lines() {
-            let mut fields = line.split_ascii_whitespace();
-            let Some(kind) = fields.next() else {
-                continue;
-            };
-            if !matches!(
-                kind.to_ascii_lowercase().as_str(),
-                "localforward" | "remoteforward" | "dynamicforward"
-            ) {
-                continue;
-            }
-            let Some(listener) = fields.next() else {
-                bail!("invalid {kind} in ssh -G output");
-            };
-            if listener_port(listener) == Some(port) {
-                bail!("SSH forwarding listener conflicts with SGPT_PORT {port}: {line}");
-            }
+    for line in effective.lines() {
+        let mut fields = line.split_ascii_whitespace();
+        let Some(kind) = fields.next() else {
+            continue;
+        };
+        if !matches!(
+            kind.to_ascii_lowercase().as_str(),
+            "localforward" | "remoteforward" | "dynamicforward"
+        ) {
+            continue;
+        }
+        let Some(listener) = fields.next() else {
+            bail!("invalid {kind} in ssh -G output");
+        };
+        if listener_port(listener) == Some(relay_port) {
+            bail!("SSH forwarding listener conflicts with SGPT_PORT {relay_port}: {line}");
         }
     }
     Ok(())
@@ -460,10 +454,9 @@ mod tests {
 
     #[test]
     fn shared_effective_config_fixtures_match_rust_policy() {
-        let args = validate(&strings(&["host"])).unwrap();
         for case in fixtures::EFFECTIVE {
             assert_eq!(
-                validate_effective(&args, case.effective, Some(case.port)).is_ok(),
+                validate_effective(case.effective, case.port).is_ok(),
                 case.accepted,
                 "{}",
                 case.name

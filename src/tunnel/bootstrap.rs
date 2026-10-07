@@ -17,7 +17,6 @@ done
 : "${SGPT_SESSION_TOKEN:?missing SGPT_SESSION_TOKEN}"
 : "${SGPT_SESSION_ID:?missing SGPT_SESSION_ID}"
 : "${SGPT_TIMEOUT_SECONDS:=60}"
-: "${SGPT_VERSION:=0.6.0}"
 case "$SGPT_PORT" in *[!0-9]*|'') _sgpt_die "invalid SGPT_PORT" ;; esac
 case "$SGPT_SESSION_TOKEN" in *[!0123456789abcdefABCDEF]*|'') _sgpt_die "invalid SGPT_SESSION_TOKEN" ;; esac
 [ "${#SGPT_SESSION_TOKEN}" -eq 64 ] || _sgpt_die "invalid SGPT_SESSION_TOKEN"

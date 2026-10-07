@@ -211,8 +211,7 @@ fn save_conversation_with_limits(
     limit: u64,
 ) -> anyhow::Result<()> {
     let path = session.conversation_path(conversation_id)?;
-    let (_persisted, bytes, _physically_compacted) =
-        prepare_for_physical_limit(after, target as usize, limit as usize)?;
+    let bytes = prepare_for_physical_limit(after, target as usize, limit as usize)?;
     atomic_write_0600(&path, &bytes)
 }
 
@@ -220,22 +219,17 @@ fn prepare_for_physical_limit(
     conversation: &Conversation,
     target: usize,
     limit: usize,
-) -> anyhow::Result<(Conversation, Vec<u8>, bool)> {
+) -> anyhow::Result<Vec<u8>> {
     let mut persisted = conversation.clone();
     let mut bytes = serialize_v2(&persisted)?;
-    let mut compacted = false;
-    while bytes.len() > target {
-        if !persisted.compact_oldest_turn_for_external_limit() {
-            break;
-        }
-        compacted = true;
+    while bytes.len() > target && persisted.compact_oldest_turn_for_external_limit() {
         bytes = serialize_v2(&persisted)?;
     }
     ensure!(
         bytes.len() <= limit,
         "conversation history exceeded 16 MiB physical limit."
     );
-    Ok((persisted, bytes, compacted))
+    Ok(bytes)
 }
 
 fn serialize_v2(conversation: &Conversation) -> anyhow::Result<Vec<u8>> {
@@ -302,7 +296,7 @@ fn atomic_write_0600(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         fs::rename(&tmp, path)?;
-        set_file_0600(path)
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -380,8 +374,9 @@ async fn controlling_tty() -> Option<String> {
 }
 fn local_runtime_base() -> anyhow::Result<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_RUNTIME_DIR") {
-        let path = PathBuf::from(xdg).join("sgpt");
-        if usable_private_dir(path.parent().unwrap_or(Path::new("/"))) {
+        let xdg = PathBuf::from(xdg);
+        if usable_private_dir(&xdg) {
+            let path = xdg.join("sgpt");
             secure_dir(&path)?;
             return Ok(path);
         }
@@ -399,10 +394,6 @@ fn usable_private_dir(path: &Path) -> bool {
 fn secure_dir(path: &Path) -> anyhow::Result<()> {
     fs::create_dir_all(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
-}
-fn set_file_0600(path: &Path) -> anyhow::Result<()> {
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 fn uid() -> anyhow::Result<String> {
@@ -550,10 +541,9 @@ mod tests {
             .map(|id| turn(id, if id == 0 { "important stdin" } else { "" }, "ok"))
             .collect::<Vec<_>>();
         let conversation = Conversation::from_parts(turns, Vec::new()).unwrap();
-        let (persisted, bytes, compacted) =
-            prepare_for_physical_limit(&conversation, 2_500, 3_000).unwrap();
-        assert!(compacted);
+        let bytes = prepare_for_physical_limit(&conversation, 2_500, 3_000).unwrap();
         assert!(bytes.len() <= 2_500);
+        let persisted = parse_history(std::str::from_utf8(&bytes).unwrap()).unwrap();
         assert_eq!(
             persisted.turns().last().unwrap().request_id,
             "0000000000000027"
@@ -568,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_compaction_rewrites_atomically_and_allows_future_append() {
+    fn physical_compaction_rewrites_atomically_and_next_save_succeeds() {
         let (_temp, session) = session();
         let id = "0123456789abcdef";
         let before = Conversation::from_parts(

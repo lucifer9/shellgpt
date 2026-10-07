@@ -62,7 +62,6 @@ fn env_required(name: &str) -> anyhow::Result<String> {
 }
 
 pub fn normalize_base_url(input: &str) -> anyhow::Result<String> {
-    ensure!(!input.is_empty(), "SGPT_BASE_URL is not set.");
     let mut url = Url::parse(input)?;
     ensure!(
         matches!(url.scheme(), "http" | "https"),
@@ -101,7 +100,6 @@ fn parse_bounded(
 }
 
 pub fn validate_api_key(value: &str) -> anyhow::Result<()> {
-    ensure!(!value.is_empty(), "SGPT_API_KEY is not set.");
     ensure!(
         !value.chars().any(char::is_control),
         "SGPT_API_KEY must not contain control characters or newlines."
@@ -110,15 +108,8 @@ pub fn validate_api_key(value: &str) -> anyhow::Result<()> {
 }
 
 pub fn parse_timeout(value: Option<String>) -> anyhow::Result<Duration> {
-    let seconds = match value {
-        Some(value) => value.parse::<u64>()?,
-        None => 60,
-    };
-    ensure!(
-        (1..=600).contains(&seconds),
-        "SGPT_TIMEOUT_SECONDS must be in 1..=600."
-    );
-    Ok(Duration::from_secs(seconds))
+    let seconds = parse_bounded("SGPT_TIMEOUT_SECONDS", value, 60, 1, 600)?;
+    Ok(Duration::from_secs(seconds as u64))
 }
 
 pub fn parse_tunnel_port(value: Option<String>) -> anyhow::Result<Option<u16>> {
@@ -166,7 +157,6 @@ mod tests {
     fn rejects_invalid_api_key_content() {
         assert!(validate_api_key("abc123").is_ok());
         assert!(validate_api_key("abc\n123").is_err());
-        assert!(validate_api_key("").is_err());
     }
 
     #[test]

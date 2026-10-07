@@ -72,18 +72,13 @@ pub(super) fn build_body(
         }
     }
 
-    let body = serialize(&render(
+    Ok(serde_json::to_vec(&render(
         config,
         context,
         input,
         &selected_turns,
         &selected_anchors,
-    ))?;
-    ensure!(
-        body.len() <= REQUEST_BODY_LIMIT,
-        "AI request exceeded 1 MiB limit."
-    );
-    Ok(body)
+    ))?)
 }
 
 fn recent_turns(conversation: &Conversation) -> Vec<&Turn> {
@@ -106,19 +101,14 @@ fn fitting_anchor_prefix(
     turns: &[&Turn],
     anchors: &[&InputAnchor],
 ) -> anyhow::Result<usize> {
-    let mut low = 0;
-    let mut high = anchors.len();
-    while low < high {
-        let middle = low + (high - low).div_ceil(2);
-        if serialized_len(&render(config, context, input, turns, &anchors[..middle]))?
+    for count in (1..=anchors.len()).rev() {
+        if serialized_len(&render(config, context, input, turns, &anchors[..count]))?
             <= REQUEST_BODY_LIMIT
         {
-            low = middle;
-        } else {
-            high = middle - 1;
+            return Ok(count);
         }
     }
-    Ok(low)
+    Ok(0)
 }
 
 fn deduplicated_anchors<'a>(anchors: &[&'a InputAnchor], turns: &[&Turn]) -> Vec<&'a InputAnchor> {
@@ -174,10 +164,6 @@ fn render<'a>(
         messages,
         temperature: 0.2,
     }
-}
-
-fn serialize(request: &ChatRequest<'_>) -> anyhow::Result<Vec<u8>> {
-    Ok(serde_json::to_vec(request)?)
 }
 
 fn serialized_len(request: &ChatRequest<'_>) -> anyhow::Result<usize> {
@@ -265,7 +251,7 @@ mod tests {
         let recent = recent_turns(&conversation);
         let newest_two = [recent[1], recent[0]];
         let anchor_refs = conversation.anchors().iter().collect::<Vec<_>>();
-        let exact_size = serialize(&render(
+        let exact_size = serde_json::to_vec(&render(
             &config,
             &context,
             &empty,

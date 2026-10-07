@@ -1,5 +1,5 @@
 use crate::conversation::UserInput;
-use anyhow::{bail, ensure};
+use anyhow::ensure;
 use std::io::{IsTerminal, Read};
 
 pub const STDIN_LIMIT: usize = 512 * 1024;
@@ -17,25 +17,20 @@ pub fn compose_prompt_with_is_tty<R: Read>(
     stdin: &mut R,
 ) -> anyhow::Result<UserInput> {
     let args_text = prompt_args.join(" ");
-    let stdin_text = if stdin_is_tty {
-        None
-    } else {
+    let mut stdin_text = String::new();
+    if !stdin_is_tty {
         let mut bytes = Vec::new();
         let mut limited = stdin.by_ref().take((STDIN_LIMIT + 1) as u64);
         limited.read_to_end(&mut bytes)?;
         ensure!(bytes.len() <= STDIN_LIMIT, "stdin exceeded 512 KiB limit.");
-        let len = bytes.len();
-        let text =
+        stdin_text =
             String::from_utf8(bytes).map_err(|_| anyhow::anyhow!("stdin must be valid UTF-8."))?;
-        if len == 0 { None } else { Some(text) }
-    };
-
-    match (args_text.is_empty(), stdin_text) {
-        (true, None) => bail!("prompt is required when stdin is a TTY."),
-        (false, None) => Ok(UserInput::new(args_text, "")),
-        (true, Some(stdin_text)) => Ok(UserInput::new("", stdin_text)),
-        (false, Some(stdin_text)) => Ok(UserInput::new(args_text, stdin_text)),
     }
+    ensure!(
+        !args_text.is_empty() || !stdin_text.is_empty(),
+        "prompt is required when stdin is a TTY."
+    );
+    Ok(UserInput::new(args_text, stdin_text))
 }
 
 #[cfg(test)]

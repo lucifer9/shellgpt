@@ -263,7 +263,7 @@ async fn prepare_tunnel(
     if let Err(err) = crate::tunnel::ssh::validate_effective_policy(
         &request.ssh_args,
         &request.effective_config,
-        Some(state.bootstrap_port),
+        state.bootstrap_port,
     ) {
         return plain(StatusCode::BAD_REQUEST, err.to_string());
     }

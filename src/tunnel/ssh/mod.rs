@@ -18,7 +18,7 @@ pub async fn run_tunnel(ssh_args: Vec<String>, config: AiConfig) -> anyhow::Resu
     let listener = bind_loopback(user_port).await?;
     let actual_port = listener.local_addr()?.port();
     let effective = process::effective_config(&validated).await?;
-    policy::validate_effective(&validated, &effective, Some(actual_port))?;
+    policy::validate_effective(&effective, actual_port)?;
 
     let token = ids::session_token()?;
     let session_id = ids::id128()?;
@@ -60,10 +60,10 @@ pub async fn run_tunnel(ssh_args: Vec<String>, config: AiConfig) -> anyhow::Resu
 pub fn validate_effective_policy(
     user_args: &[String],
     effective: &str,
-    relay_port: Option<u16>,
+    relay_port: u16,
 ) -> anyhow::Result<()> {
-    let validated = policy::validate(user_args)?;
-    policy::validate_effective(&validated, effective, relay_port)
+    policy::validate(user_args)?;
+    policy::validate_effective(effective, relay_port)
 }
 
 pub fn remote_bootstrap_command(
@@ -94,9 +94,5 @@ pub fn remote_bootstrap_command(
 }
 
 pub fn shell_quote(value: &str) -> String {
-    if value.is_empty() {
-        "''".into()
-    } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    }
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
