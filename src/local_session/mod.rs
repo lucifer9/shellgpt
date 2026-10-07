@@ -1,29 +1,14 @@
 use crate::ai::OpenAiClient;
 use crate::context::ContextBlock;
-use crate::conversation::{AssistantResponse, Turn, UserInput, request_digest};
+use crate::conversation::{AskMode, AssistantResponse, Turn, UserInput, request_digest};
 use crate::error::ERR_NO_PREVIOUS;
 use crate::ids;
 
 mod history;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RequestMode {
-    New,
-    Continue,
-}
-
-impl RequestMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::New => "new",
-            Self::Continue => "continue",
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct LocalRequest {
-    pub mode: RequestMode,
+    pub mode: AskMode,
     pub context: ContextBlock,
     pub input: UserInput,
 }
@@ -52,13 +37,13 @@ impl LocalShellSession {
     ) -> anyhow::Result<String> {
         let _lock = history::SessionLock::acquire(session, &request_id, request.mode.as_str())?;
         let (conversation_id, mut conversation) = match request.mode {
-            RequestMode::Continue => {
+            AskMode::Continue => {
                 let current = history::read_current(session)?
                     .ok_or_else(|| anyhow::anyhow!(ERR_NO_PREVIOUS))?;
                 let conversation = history::load_conversation(session, &current)?;
                 (current, conversation)
             }
-            RequestMode::New => (ids::id128()?, Default::default()),
+            AskMode::New => (ids::id128()?, Default::default()),
         };
 
         let answer = self
@@ -77,7 +62,7 @@ impl LocalShellSession {
             assistant: AssistantResponse::new(answer.clone()),
         })?;
         history::save_conversation(session, &conversation_id, &conversation)?;
-        if request.mode == RequestMode::New {
+        if request.mode == AskMode::New {
             history::write_current(session, &conversation_id)?;
         }
         if self.debug {
@@ -123,7 +108,7 @@ mod tests {
         (temp, session)
     }
 
-    fn request(mode: RequestMode) -> LocalRequest {
+    fn request(mode: AskMode) -> LocalRequest {
         LocalRequest {
             mode,
             context: ContextBlock::default(),
@@ -172,7 +157,7 @@ mod tests {
         let runner = LocalShellSession::new(client(endpoint), false);
 
         assert!(runner
-            .execute_resolved(&session, REQUEST_ID.into(), request(RequestMode::New))
+            .execute_resolved(&session, REQUEST_ID.into(), request(AskMode::New))
             .await
             .is_err());
         server.await.unwrap();
@@ -207,7 +192,7 @@ mod tests {
 
         assert!(
             runner
-                .execute_resolved(&session, REQUEST_ID.into(), request(RequestMode::Continue))
+                .execute_resolved(&session, REQUEST_ID.into(), request(AskMode::Continue))
                 .await
                 .is_err()
         );
@@ -230,7 +215,7 @@ mod tests {
         let runner = LocalShellSession::new(client(endpoint), false);
 
         let answer = runner
-            .execute_resolved(&session, REQUEST_ID.into(), request(RequestMode::New))
+            .execute_resolved(&session, REQUEST_ID.into(), request(AskMode::New))
             .await
             .unwrap();
         server.await.unwrap();
@@ -260,7 +245,7 @@ mod tests {
         let runner = LocalShellSession::new(client(endpoint), false);
 
         let answer = runner
-            .execute_resolved(&session, REQUEST_ID.into(), request(RequestMode::Continue))
+            .execute_resolved(&session, REQUEST_ID.into(), request(AskMode::Continue))
             .await
             .unwrap();
         server.await.unwrap();
@@ -294,7 +279,7 @@ mod tests {
         let runner = LocalShellSession::new(client(endpoint), false);
 
         runner
-            .execute_resolved(&session, REQUEST_ID.into(), request(RequestMode::Continue))
+            .execute_resolved(&session, REQUEST_ID.into(), request(AskMode::Continue))
             .await
             .unwrap();
         server.await.unwrap();
@@ -345,7 +330,7 @@ mod tests {
         let session_clone = session.clone();
         let transaction = tokio::spawn(async move {
             runner
-                .execute_resolved(&session_clone, REQUEST_ID.into(), request(RequestMode::New))
+                .execute_resolved(&session_clone, REQUEST_ID.into(), request(AskMode::New))
                 .await
         });
 

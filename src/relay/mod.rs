@@ -1,9 +1,9 @@
 use crate::ai::OpenAiClient;
 use crate::config::AiConfig;
 use crate::context::ContextBlock;
-use crate::conversation::{AssistantResponse, Turn, UserInput, request_digest};
+use crate::conversation::{AskMode, AssistantResponse, Turn, UserInput, request_digest};
 use crate::ids;
-use crate::projection::{AskMode as ProjectionAskMode, BeginAsk, ProjectionError, ProjectionTree};
+use crate::projection::{BeginAsk, ProjectionError, ProjectionTree};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{DefaultBodyLimit, State};
@@ -84,13 +84,6 @@ pub fn app(state: RelayState) -> Router {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum AskMode {
-    New,
-    Continue,
-}
-
-#[derive(Debug, Deserialize)]
 struct AskRequest {
     request_id: String,
     session_id: String,
@@ -122,12 +115,8 @@ async fn ask(State(state): State<RelayState>, headers: HeaderMap, body: Bytes) -
     let mut input = request.input;
     input.timestamp = crate::conversation::timestamp();
     let context = request.context.truncated();
-    let mode = match request.mode {
-        AskMode::New => "new",
-        AskMode::Continue => "continue",
-    };
     let digest = match serde_json::to_vec(&context) {
-        Ok(context_json) => request_digest(mode, &input, &context_json),
+        Ok(context_json) => request_digest(request.mode.as_str(), &input, &context_json),
         Err(err) => return plain(StatusCode::BAD_REQUEST, err.to_string()),
     };
 
@@ -135,10 +124,7 @@ async fn ask(State(state): State<RelayState>, headers: HeaderMap, body: Bytes) -
         .tree
         .begin_ask(
             &request.session_id,
-            match request.mode {
-                AskMode::New => ProjectionAskMode::New,
-                AskMode::Continue => ProjectionAskMode::Continue,
-            },
+            request.mode,
             &request.request_id,
             &digest,
         )

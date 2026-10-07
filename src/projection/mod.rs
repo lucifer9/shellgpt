@@ -1,4 +1,4 @@
-use crate::conversation::{Conversation, Turn};
+use crate::conversation::{AskMode, Conversation, Turn};
 use crate::error::{ERR_BUSY, ERR_NO_PREVIOUS};
 use crate::ids;
 use std::collections::{HashMap, HashSet};
@@ -52,11 +52,6 @@ impl ProjectedShellSession {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AskMode {
-    New,
-    Continue,
-}
 
 #[derive(Debug)]
 pub enum BeginAsk {

@@ -57,9 +57,9 @@ async fn run() -> anyhow::Result<i32> {
                     .context("failed to register SIGINT handler")?;
             let execution = session.execute(local_session::LocalRequest {
                 mode: if continue_mode {
-                    local_session::RequestMode::Continue
+                    conversation::AskMode::Continue
                 } else {
-                    local_session::RequestMode::New
+                    conversation::AskMode::New
                 },
                 context,
                 input,

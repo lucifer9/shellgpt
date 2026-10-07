@@ -3,6 +3,22 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AskMode {
+    New,
+    Continue,
+}
+
+impl AskMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Continue => "continue",
+        }
+    }
+}
+
 pub const LOGICAL_HIGH_WATER: usize = 2 * 1024 * 1024;
 pub const LOGICAL_LOW_WATER: usize = 1536 * 1024;
 pub const ANCHOR_LIMIT: usize = 10;
