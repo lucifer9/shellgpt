@@ -1,5 +1,4 @@
 use super::bootstrap::stage1_script;
-use super::ssh::policy::fixtures;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
@@ -40,30 +39,26 @@ fn nested_tunnel_forwards_user_args_with_controlled_options() {
     for option in super::ssh::policy::CONTROLLED_OPTIONS {
         assert!(calls.contains(option), "missing {option}");
     }
+    let prepare = harness.prepare_request();
+    assert_eq!(prepare["parent_session_id"], "0123456789abcdef");
+    assert_eq!(
+        prepare["ssh_args"],
+        serde_json::json!(["-p", "2222", "host"])
+    );
+    assert_eq!(prepare["effective_config"], "hostname example\n");
 }
 
 #[test]
-fn nested_tunnel_effective_config_cases_reach_the_relay_adapter() {
-    for case in fixtures::EFFECTIVE {
-        let code = if case.accepted { "200" } else { "400" };
-        let harness = NestedSshHarness::new(case.effective, code);
-        let output = harness.run(&["host"]);
-        assert_eq!(
-            output.status.success(),
-            case.accepted,
-            "{}: {}",
-            case.name,
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let calls = harness.calls();
-        assert!(calls.contains("PHASE=-G\n"), "{}", case.name);
-        assert_eq!(
-            calls.contains("PHASE=final\n"),
-            case.accepted,
-            "{}",
-            case.name
-        );
-    }
+fn nested_tunnel_stops_before_final_ssh_when_relay_rejects_prepare() {
+    let effective = "localforward 127.0.0.1:18080 target:22\n";
+    let harness = NestedSshHarness::new(effective, "400");
+    let output = harness.run(&["host"]);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("forwarding conflict"));
+    let calls = harness.calls();
+    assert!(calls.contains("PHASE=-G\n"));
+    assert!(!calls.contains("PHASE=final\n"));
+    assert_eq!(harness.prepare_request()["effective_config"], effective);
 }
 
 #[cfg(target_os = "macos")]
@@ -121,6 +116,7 @@ struct NestedSshHarness {
     script: std::path::PathBuf,
     session: std::path::PathBuf,
     calls: std::path::PathBuf,
+    prepare_request: std::path::PathBuf,
     path: String,
     effective_config: String,
     prepare_status: String,
@@ -132,6 +128,7 @@ impl NestedSshHarness {
         let bin = temp.path().join("bin");
         let session = temp.path().join("session");
         let calls = temp.path().join("ssh.calls");
+        let prepare_request = temp.path().join("prepare.json");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::create_dir_all(&session).unwrap();
 
@@ -154,10 +151,17 @@ exit 0
             &curl,
             r#"#!/bin/sh
 _sgpt_output=
+_sgpt_data=
+_sgpt_prepare=0
 while [ "$#" -gt 0 ]; do
-  if [ "$1" = -o ]; then shift; _sgpt_output="$1"; fi
+  case "$1" in
+    -o) shift; _sgpt_output="$1" ;;
+    --data-binary) shift; _sgpt_data="${1#@}" ;;
+    */v1/tunnel/prepare) _sgpt_prepare=1 ;;
+  esac
   shift
 done
+if [ "$_sgpt_prepare" = 1 ]; then cat "$_sgpt_data" >"$SGPT_TEST_PREPARE_REQUEST"; fi
 if [ -n "$_sgpt_output" ]; then
   if [ "$SGPT_TEST_PREPARE_STATUS" = 200 ]; then
     printf '%s' '{"session_id":"fedcba9876543210","remote_command":"remote bootstrap"}' >"$_sgpt_output"
@@ -182,6 +186,7 @@ exit 0
             script,
             session,
             calls,
+            prepare_request,
             path,
             effective_config: effective_config.into(),
             prepare_status: prepare_status.into(),
@@ -219,8 +224,13 @@ exit 0
             .env("SGPT_SESSION_TOKEN", "a".repeat(64))
             .env("SGPT_SESSION_ID", "0123456789abcdef")
             .env("SGPT_TEST_SSH_CALLS", &self.calls)
+            .env("SGPT_TEST_PREPARE_REQUEST", &self.prepare_request)
             .env("SGPT_TEST_EFFECTIVE_CONFIG", &self.effective_config)
             .env("SGPT_TEST_PREPARE_STATUS", &self.prepare_status)
+    }
+
+    fn prepare_request(&self) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(&self.prepare_request).unwrap()).unwrap()
     }
 
     fn calls(&self) -> String {
