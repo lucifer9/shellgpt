@@ -176,7 +176,6 @@ fn projection_error_response(error: ProjectionError) -> Response {
     let status = match error {
         ProjectionError::NotFound => StatusCode::NOT_FOUND,
         ProjectionError::Conversation(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        ProjectionError::InvalidSessionId => StatusCode::BAD_REQUEST,
         _ => StatusCode::CONFLICT,
     };
     plain(status, error.to_string())

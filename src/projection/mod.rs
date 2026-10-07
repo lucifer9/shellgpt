@@ -1,6 +1,5 @@
 use crate::conversation::{AskMode, Conversation, Turn};
 use crate::error::{ERR_BUSY, ERR_NO_PREVIOUS};
-use crate::ids;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
@@ -60,7 +59,6 @@ pub enum BeginAsk {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProjectionError {
-    InvalidSessionId,
     DuplicateSessionId,
     SessionLimit,
     NotFound,
@@ -76,7 +74,6 @@ pub enum ProjectionError {
 impl fmt::Display for ProjectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidSessionId => f.write_str("invalid session id"),
             Self::DuplicateSessionId => f.write_str("duplicate session id"),
             Self::SessionLimit => f.write_str("Projected Shell Session limit reached."),
             Self::NotFound => f.write_str("Projected Shell Session not found."),
@@ -122,11 +119,9 @@ impl ProjectionSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSnapshot {
     pub id: String,
-    pub parent: Option<String>,
     pub children: Vec<String>,
     pub status: SessionStatus,
     pub has_lease: bool,
-    pub conversation_turns: usize,
 }
 
 impl ProjectionTree {
@@ -146,7 +141,6 @@ impl ProjectionTree {
     }
 
     pub async fn create_root(&self, session_id: String) -> Result<(), ProjectionError> {
-        validate_session_id(&session_id)?;
         let mut state = self.inner.lock().await;
         expire_pending(&mut state, self.pending_ttl);
         if state.sessions.len() >= self.max_sessions {
@@ -166,7 +160,6 @@ impl ProjectionTree {
         parent_id: &str,
         child_id: String,
     ) -> Result<(), ProjectionError> {
-        validate_session_id(&child_id)?;
         let mut state = self.inner.lock().await;
         expire_pending(&mut state, self.pending_ttl);
         if state.sessions.len() >= self.max_sessions {
@@ -242,7 +235,7 @@ impl ProjectionTree {
         let mut state = self.inner.lock().await;
         expire_pending(&mut state, self.pending_ttl);
         let lease_id = state.next_lease_id;
-        state.next_lease_id = state.next_lease_id.wrapping_add(1).max(1);
+        state.next_lease_id += 1;
         let session = state
             .sessions
             .get_mut(session_id)
@@ -272,7 +265,7 @@ impl ProjectionTree {
             tree: self.clone(),
             session_id: session_id.to_string(),
             lease_id,
-            conversation: Some(conversation),
+            conversation,
             finished: false,
         }))
     }
@@ -289,14 +282,9 @@ impl ProjectionTree {
                 children.sort();
                 SessionSnapshot {
                     id: id.clone(),
-                    parent: session.parent.clone(),
                     children,
                     status: session.status,
                     has_lease: session.in_flight.is_some(),
-                    conversation_turns: session
-                        .conversation
-                        .as_ref()
-                        .map_or(0, |conversation| conversation.turns().len()),
                 }
             })
             .collect::<Vec<_>>();
@@ -334,22 +322,17 @@ pub struct AskLease {
     tree: ProjectionTree,
     session_id: String,
     lease_id: u64,
-    conversation: Option<Conversation>,
+    conversation: Conversation,
     finished: bool,
 }
 
 impl AskLease {
     pub fn conversation(&self) -> &Conversation {
-        self.conversation
-            .as_ref()
-            .expect("unfinished lease always owns a Conversation")
+        &self.conversation
     }
 
     pub async fn commit(mut self, turn: Turn) -> Result<(), ProjectionError> {
-        let mut conversation = self
-            .conversation
-            .take()
-            .expect("unfinished lease always owns a Conversation");
+        let mut conversation = std::mem::take(&mut self.conversation);
         if let Err(error) = conversation.commit(turn) {
             self.tree
                 .complete_lease(&self.session_id, self.lease_id, None)
@@ -412,14 +395,6 @@ fn remove_session(state: &mut ProjectionTreeState, session_id: &str) {
     }
     for child_id in session.children {
         remove_session(state, &child_id);
-    }
-}
-
-fn validate_session_id(session_id: &str) -> Result<(), ProjectionError> {
-    if ids::is_hex_id(session_id) {
-        Ok(())
-    } else {
-        Err(ProjectionError::InvalidSessionId)
     }
 }
 
