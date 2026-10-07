@@ -13,7 +13,6 @@ pub fn ai_config(endpoint: impl Into<String>) -> AiConfig {
         system_prompt: None,
         proxy: None,
         timeout: Duration::from_secs(5),
-        debug: false,
         max_projected_sessions: 64,
         max_concurrent_requests: 4,
     }

@@ -29,21 +29,19 @@ pub async fn run_tunnel(ssh_args: Vec<String>, config: AiConfig) -> anyhow::Resu
         RelayState::new(token.clone(), config.clone())?.with_bootstrap_port(actual_port);
     relay_state.create_root(session_id).await?;
 
-    if config.debug {
-        crate::debug::log("relay_addr", format!("127.0.0.1:{actual_port}"));
-        crate::debug::log(
-            "SGPT_SESSION_TOKEN",
-            crate::redact::fingerprint_token(&token),
-        );
-        crate::debug::log(
-            "SGPT_API_KEY",
-            crate::redact::fingerprint_secret(&config.api_key),
-        );
-        crate::debug::log("ai_endpoint", &config.endpoint);
-        crate::debug::log("ai_model", &config.model);
-        if let Some(proxy) = &config.proxy {
-            crate::debug::log("SGPT_PROXY", crate::redact::redact_proxy_password(proxy));
-        }
+    crate::debug::log("relay_addr", format!("127.0.0.1:{actual_port}"));
+    crate::debug::log(
+        "SGPT_SESSION_TOKEN",
+        crate::redact::fingerprint_token(&token),
+    );
+    crate::debug::log(
+        "SGPT_API_KEY",
+        crate::redact::fingerprint_secret(&config.api_key),
+    );
+    crate::debug::log("ai_endpoint", &config.endpoint);
+    crate::debug::log("ai_model", &config.model);
+    if let Some(proxy) = &config.proxy {
+        crate::debug::log("SGPT_PROXY", crate::redact::redact_proxy_password(proxy));
     }
 
     let server = tokio::spawn(async move {

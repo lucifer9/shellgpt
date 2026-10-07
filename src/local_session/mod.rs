@@ -15,12 +15,11 @@ pub struct LocalRequest {
 
 pub struct LocalShellSession {
     client: OpenAiClient,
-    debug: bool,
 }
 
 impl LocalShellSession {
-    pub fn new(client: OpenAiClient, debug: bool) -> Self {
-        Self { client, debug }
+    pub fn new(client: OpenAiClient) -> Self {
+        Self { client }
     }
 
     pub async fn execute(&self, request: LocalRequest) -> anyhow::Result<String> {
@@ -65,10 +64,8 @@ impl LocalShellSession {
         if request.mode == AskMode::New {
             history::write_current(session, &conversation_id)?;
         }
-        if self.debug {
-            crate::debug::log("session_id", session.session_id());
-            crate::debug::log("session_dir", session.dir().display());
-        }
+        crate::debug::log("session_id", session.session_id());
+        crate::debug::log("session_dir", session.dir().display());
         Ok(answer)
     }
 }
@@ -94,7 +91,6 @@ mod tests {
             system_prompt: None,
             proxy: None,
             timeout: Duration::from_secs(5),
-            debug: false,
             max_projected_sessions: 64,
             max_concurrent_requests: 4,
         })
@@ -154,7 +150,7 @@ mod tests {
     async fn provider_failure_writes_neither_conversation_nor_current_and_returns_no_answer() {
         let (_temp, session) = fixture();
         let (endpoint, server) = provider("500 Internal Server Error", b"provider failed").await;
-        let runner = LocalShellSession::new(client(endpoint), false);
+        let runner = LocalShellSession::new(client(endpoint));
 
         assert!(runner
             .execute_resolved(&session, REQUEST_ID.into(), request(AskMode::New))
@@ -188,7 +184,7 @@ mod tests {
             br#"{"choices":[{"message":{"content":"new answer"}}]}"#,
         )
         .await;
-        let runner = LocalShellSession::new(client(endpoint), false);
+        let runner = LocalShellSession::new(client(endpoint));
 
         assert!(
             runner
@@ -212,7 +208,7 @@ mod tests {
             br#"{"choices":[{"message":{"content":"answer"}}]}"#,
         )
         .await;
-        let runner = LocalShellSession::new(client(endpoint), false);
+        let runner = LocalShellSession::new(client(endpoint));
 
         let answer = runner
             .execute_resolved(&session, REQUEST_ID.into(), request(AskMode::New))
@@ -242,7 +238,7 @@ mod tests {
             br#"{"choices":[{"message":{"content":"next answer"}}]}"#,
         )
         .await;
-        let runner = LocalShellSession::new(client(endpoint), false);
+        let runner = LocalShellSession::new(client(endpoint));
 
         let answer = runner
             .execute_resolved(&session, REQUEST_ID.into(), request(AskMode::Continue))
@@ -276,7 +272,7 @@ mod tests {
         history::write_current(&session, conversation_id).unwrap();
         let (endpoint, server) =
             provider("200 OK", br#"{"choices":[{"message":{"content":"next"}}]}"#).await;
-        let runner = LocalShellSession::new(client(endpoint), false);
+        let runner = LocalShellSession::new(client(endpoint));
 
         runner
             .execute_resolved(&session, REQUEST_ID.into(), request(AskMode::Continue))
@@ -326,7 +322,7 @@ mod tests {
                 .unwrap();
             stream.write_all(body).await.unwrap();
         });
-        let runner = LocalShellSession::new(client(endpoint), false);
+        let runner = LocalShellSession::new(client(endpoint));
         let session_clone = session.clone();
         let transaction = tokio::spawn(async move {
             runner

@@ -48,9 +48,8 @@ async fn run() -> anyhow::Result<i32> {
             let input = input::compose_prompt(prompt_args, std::io::stdin())?;
             let config = config::AiConfig::from_env()?;
             let context = context::collect_local_context().await;
-            let debug = config.debug;
             let client = ai::OpenAiClient::new(config)?;
-            let session = local_session::LocalShellSession::new(client, debug);
+            let session = local_session::LocalShellSession::new(client);
             // Register synchronously before execution can acquire the session lock.
             let mut interrupt =
                 tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())

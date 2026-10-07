@@ -11,7 +11,6 @@ pub struct AiConfig {
     pub system_prompt: Option<String>,
     pub proxy: Option<String>,
     pub timeout: Duration,
-    pub debug: bool,
     pub max_projected_sessions: usize,
     pub max_concurrent_requests: usize,
 }
@@ -29,7 +28,6 @@ impl AiConfig {
             system_prompt: std::env::var("SGPT_SYSTEM_PROMPT").ok(),
             proxy: std::env::var("SGPT_PROXY").ok().filter(|s| !s.is_empty()),
             timeout: parse_timeout(std::env::var("SGPT_TIMEOUT_SECONDS").ok())?,
-            debug: crate::debug::enabled(),
             max_projected_sessions: parse_bounded(
                 "SGPT_MAX_PROJECTED_SESSIONS",
                 std::env::var("SGPT_MAX_PROJECTED_SESSIONS").ok(),
