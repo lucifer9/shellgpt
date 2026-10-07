@@ -2,7 +2,6 @@ use crate::ai::OpenAiClient;
 use crate::config::AiConfig;
 use crate::context::ContextBlock;
 use crate::conversation::{AssistantResponse, Turn, UserInput, request_digest};
-use crate::error::ERR_BODY_TOO_LARGE;
 use crate::ids;
 use crate::projection::{AskMode as ProjectionAskMode, BeginAsk, ProjectionError, ProjectionTree};
 use axum::Router;
@@ -62,23 +61,23 @@ pub fn app(state: RelayState) -> Router {
     Router::new()
         .route(
             "/v1/ask",
-            post(ask).layer(DefaultBodyLimit::max(ASK_BODY_LIMIT + 1)),
+            post(ask).layer(DefaultBodyLimit::max(ASK_BODY_LIMIT)),
         )
         .route(
             "/v1/session/activate",
-            post(activate).layer(DefaultBodyLimit::max(CONTROL_BODY_LIMIT + 1)),
+            post(activate).layer(DefaultBodyLimit::max(CONTROL_BODY_LIMIT)),
         )
         .route(
             "/v1/session/unregister",
-            post(unregister).layer(DefaultBodyLimit::max(CONTROL_BODY_LIMIT + 1)),
+            post(unregister).layer(DefaultBodyLimit::max(CONTROL_BODY_LIMIT)),
         )
         .route(
             "/v1/session/cancel",
-            post(cancel).layer(DefaultBodyLimit::max(CONTROL_BODY_LIMIT + 1)),
+            post(cancel).layer(DefaultBodyLimit::max(CONTROL_BODY_LIMIT)),
         )
         .route(
             "/v1/tunnel/prepare",
-            post(prepare_tunnel).layer(DefaultBodyLimit::max(PREPARE_BODY_LIMIT + 1)),
+            post(prepare_tunnel).layer(DefaultBodyLimit::max(PREPARE_BODY_LIMIT)),
         )
         .route("/v1/bootstrap/sh", get(bootstrap_sh))
         .with_state(state)
@@ -103,9 +102,6 @@ struct AskRequest {
 async fn ask(State(state): State<RelayState>, headers: HeaderMap, body: Bytes) -> Response {
     if !authorized(&headers, &state.token) {
         return plain(StatusCode::UNAUTHORIZED, "Unauthorized.");
-    }
-    if body.len() > ASK_BODY_LIMIT {
-        return plain(StatusCode::PAYLOAD_TOO_LARGE, ERR_BODY_TOO_LARGE);
     }
     let request: AskRequest = match serde_json::from_slice(&body) {
         Ok(request) => request,
@@ -244,12 +240,6 @@ fn control_session_id(
     if !authorized(headers, &state.token) {
         return Err(Box::new(plain(StatusCode::UNAUTHORIZED, "Unauthorized.")));
     }
-    if body.len() > CONTROL_BODY_LIMIT {
-        return Err(Box::new(plain(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            ERR_BODY_TOO_LARGE,
-        )));
-    }
     let request: SessionRequest = serde_json::from_slice(body)
         .map_err(|error| Box::new(plain(StatusCode::BAD_REQUEST, error.to_string())))?;
     if !ids::is_hex_id(&request.session_id) {
@@ -280,9 +270,6 @@ async fn prepare_tunnel(
 ) -> Response {
     if !authorized(&headers, &state.token) {
         return plain(StatusCode::UNAUTHORIZED, "Unauthorized.");
-    }
-    if body.len() > PREPARE_BODY_LIMIT {
-        return plain(StatusCode::PAYLOAD_TOO_LARGE, ERR_BODY_TOO_LARGE);
     }
     let request: PrepareRequest = match serde_json::from_slice(&body) {
         Ok(request) => request,
