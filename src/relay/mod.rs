@@ -677,6 +677,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prepare_creates_a_pending_child_only_for_policy_compliant_requests() {
+        let token = "a".repeat(64);
+        let state = RelayState::new(token.clone(), config())
+            .unwrap()
+            .with_bootstrap_port(18080);
+        let parent = "0123456789abcdef";
+        state.create_root(parent.into()).await.unwrap();
+        state.tree.activate(parent).await.unwrap();
+        let router = app(state.clone());
+        let prepare = |ssh_args: serde_json::Value, effective: &str| {
+            serde_json::to_vec(&serde_json::json!({
+                "parent_session_id": parent,
+                "ssh_args": ssh_args,
+                "effective_config": effective,
+            }))
+            .unwrap()
+        };
+
+        for body in [
+            prepare(serde_json::json!(["host", "uptime"]), ""),
+            prepare(serde_json::json!(["-N", "host"]), ""),
+            prepare(
+                serde_json::json!(["host"]),
+                "localforward 127.0.0.1:18080 target:22\n",
+            ),
+        ] {
+            let rejected = post_body(router.clone(), "/v1/tunnel/prepare", &token, body).await;
+            assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+            let snapshot = state.tree.snapshot().await;
+            assert!(snapshot.session(parent).unwrap().children.is_empty());
+        }
+
+        let accepted = post_body(
+            router,
+            "/v1/tunnel/prepare",
+            &token,
+            prepare(serde_json::json!(["-p", "2222", "host"]), "hostname host\n"),
+        )
+        .await;
+        assert_eq!(accepted.status(), StatusCode::OK);
+        let response: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(accepted.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let child = response["session_id"].as_str().unwrap();
+        let snapshot = state.tree.snapshot().await;
+        assert_eq!(snapshot.session(parent).unwrap().children, [child]);
+        assert_eq!(
+            snapshot.session(child).unwrap().status,
+            crate::projection::SessionStatus::Pending
+        );
+    }
+
+    #[tokio::test]
     async fn prepare_and_ask_have_independent_read_limits() {
         let token = "a".repeat(64);
         let state = RelayState::new(token.clone(), config()).unwrap();
