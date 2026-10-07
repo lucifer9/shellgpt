@@ -100,7 +100,7 @@ mod tests {
     fn fixture() -> (tempfile::TempDir, history::LocalSession) {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir(temp.path().join("conversations")).unwrap();
-        let session = history::LocalSession::at_for_tests(temp.path().to_path_buf());
+        let session = history::local_session_for_tests(temp.path().to_path_buf());
         (temp, session)
     }
 

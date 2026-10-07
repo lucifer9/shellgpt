@@ -35,13 +35,6 @@ impl LocalSession {
         })
     }
 
-    #[cfg(test)]
-    pub fn at_for_tests(dir: PathBuf) -> Self {
-        Self {
-            dir,
-            session_id: "0123456789abcdef".into(),
-        }
-    }
 
     pub(super) fn session_id(&self) -> &str {
         &self.session_id
@@ -479,7 +472,7 @@ mod tests {
     fn session() -> (tempfile::TempDir, LocalSession) {
         let temp = tempfile::tempdir().unwrap();
         secure_dir(&temp.path().join("conversations")).unwrap();
-        let session = LocalSession::at_for_tests(temp.path().to_path_buf());
+        let session = local_session_for_tests(temp.path().to_path_buf());
         (temp, session)
     }
 
@@ -721,5 +714,13 @@ mod tests {
         );
         assert_eq!(fs::read(path).unwrap(), original);
         assert_eq!(fs::read(session.current_path()).unwrap(), current_before);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn local_session_for_tests(dir: PathBuf) -> LocalSession {
+    LocalSession {
+        dir,
+        session_id: "0123456789abcdef".into(),
     }
 }
