@@ -349,7 +349,11 @@ mod tests {
         let mut conversation = Conversation::default();
         for id in 0..7 {
             conversation
-                .commit(turn(id, if id == 0 { "old stdin" } else { "" }, &"a".repeat(300_000)))
+                .commit(turn(
+                    id,
+                    if id == 0 { "old stdin" } else { "" },
+                    &"a".repeat(300_000),
+                ))
                 .unwrap();
         }
         assert!(conversation.logical_bytes() <= LOGICAL_LOW_WATER);

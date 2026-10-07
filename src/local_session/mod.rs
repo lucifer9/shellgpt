@@ -152,10 +152,12 @@ mod tests {
         let (endpoint, server) = provider("500 Internal Server Error", b"provider failed").await;
         let runner = LocalShellSession::new(client(endpoint));
 
-        assert!(runner
-            .execute_resolved(&session, REQUEST_ID.into(), request(AskMode::New))
-            .await
-            .is_err());
+        assert!(
+            runner
+                .execute_resolved(&session, REQUEST_ID.into(), request(AskMode::New))
+                .await
+                .is_err()
+        );
         server.await.unwrap();
         assert!(history::read_current(&session).unwrap().is_none());
         assert_eq!(

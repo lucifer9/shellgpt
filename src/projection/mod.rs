@@ -52,7 +52,6 @@ impl ProjectedShellSession {
     }
 }
 
-
 #[derive(Debug)]
 pub enum BeginAsk {
     Replay(String),
@@ -304,7 +303,6 @@ impl ProjectionTree {
         sessions.sort_by(|left, right| left.id.cmp(&right.id));
         ProjectionSnapshot { sessions }
     }
-
 
     async fn complete_lease(
         &self,

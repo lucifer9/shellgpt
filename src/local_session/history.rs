@@ -35,7 +35,6 @@ impl LocalSession {
         })
     }
 
-
     pub(super) fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -465,6 +464,14 @@ fn hash32(value: &str) -> String {
 }
 
 #[cfg(test)]
+pub(crate) fn local_session_for_tests(dir: PathBuf) -> LocalSession {
+    LocalSession {
+        dir,
+        session_id: "0123456789abcdef".into(),
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::turn;
@@ -484,9 +491,7 @@ mod tests {
         fs::write(&path, "{\"role\":\"user\",\"content\":\"inspect\\n\\nInput:\\nhello\",\"ts\":\"u\",\"stdin_bytes\":5}\n{\"role\":\"assistant\",\"content\":\"ok\",\"ts\":\"a\"}\n").unwrap();
         let before = load_conversation(&session, id).unwrap();
         let mut after = before.clone();
-        after
-            .commit(turn(100, "", "ok"))
-            .unwrap();
+        after.commit(turn(100, "", "ok")).unwrap();
         save_conversation(&session, id, &after).unwrap();
         let text = fs::read_to_string(path).unwrap();
         assert!(text.lines().all(|line| line.contains("\"version\":2")));
@@ -510,9 +515,7 @@ mod tests {
         let id = "0123456789abcdef";
         let before = Conversation::default();
         let mut after = before.clone();
-        after
-            .commit(turn(1, "", "ok"))
-            .unwrap();
+        after.commit(turn(1, "", "ok")).unwrap();
         save_conversation(&session, id, &after).unwrap();
         assert_eq!(load_conversation(&session, id).unwrap().turns().len(), 1);
         assert_eq!(
@@ -702,25 +705,8 @@ mod tests {
             Vec::new(),
         )
         .unwrap();
-        assert!(
-            save_conversation_with_limits(
-                &session,
-                id,
-                &after,
-                900,
-                1_000,
-            )
-            .is_err()
-        );
+        assert!(save_conversation_with_limits(&session, id, &after, 900, 1_000,).is_err());
         assert_eq!(fs::read(path).unwrap(), original);
         assert_eq!(fs::read(session.current_path()).unwrap(), current_before);
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn local_session_for_tests(dir: PathBuf) -> LocalSession {
-    LocalSession {
-        dir,
-        session_id: "0123456789abcdef".into(),
     }
 }

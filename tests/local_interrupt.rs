@@ -59,97 +59,37 @@ impl Drop for ChildGuard {
     }
 }
 
-fn accept_with_deadline(listener: &TcpListener) -> Result<TcpStream, String> {
-    listener
-        .set_nonblocking(true)
-        .map_err(|err| err.to_string())?;
-    let deadline = Instant::now() + DEADLINE;
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                stream
-                    .set_nonblocking(false)
-                    .map_err(|err| err.to_string())?;
-                return Ok(stream);
-            }
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                return Err("provider was not contacted before deadline".into());
-            }
-            Err(err) => return Err(format!("failed to accept provider connection: {err}")),
-        }
-    }
-}
-
-fn wait_for_peer_close(stream: &mut TcpStream) -> Result<(), String> {
-    let deadline = Instant::now() + DEADLINE;
+/// Returns once the peer closes the connection, or fails after DEADLINE.
+fn wait_for_peer_close(stream: &mut TcpStream) {
     let mut buffer = [0_u8; 1024];
     loop {
         match stream.read(&mut buffer) {
-            Ok(0) => return Ok(()),
+            Ok(0) => return,
             Ok(_) => {}
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    io::ErrorKind::ConnectionReset
-                        | io::ErrorKind::ConnectionAborted
-                        | io::ErrorKind::BrokenPipe
-                ) =>
-            {
-                return Ok(());
-            }
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) && Instant::now() < deadline => {}
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                return Err("provider connection remained open after SIGINT".into());
-            }
-            Err(err) => return Err(format!("failed while waiting for provider close: {err}")),
+            Err(err) if err.kind() == io::ErrorKind::ConnectionReset => return,
+            Err(err) => panic!("provider connection did not close after SIGINT: {err}"),
         }
     }
 }
 
 struct HangingProvider {
     endpoint: String,
-    received: Receiver<Result<(), String>>,
-    handle: JoinHandle<Result<(), String>>,
+    received: Receiver<()>,
+    handle: JoinHandle<()>,
 }
 
+/// Accepts one request and never answers it. A panic in the server thread drops
+/// `received`'s sender, so the test thread fails fast instead of hanging.
 fn hanging_provider() -> HangingProvider {
     let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
     let address = listener.local_addr().unwrap();
     let (received_tx, received_rx) = mpsc::channel();
     let server = std::thread::spawn(move || {
-        let mut stream = match accept_with_deadline(&listener) {
-            Ok(stream) => stream,
-            Err(err) => {
-                let _ = received_tx.send(Err(err.clone()));
-                return Err(err);
-            }
-        };
-        stream
-            .set_read_timeout(Some(Duration::from_millis(200)))
-            .map_err(|err| err.to_string())?;
-        if let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = read_http_request(&mut stream);
-        })) {
-            let msg = format!("failed to read provider request: {:?}", err);
-            let _ = received_tx.send(Err(msg.clone()));
-            return Err(msg);
-        }
-        received_tx
-            .send(Ok(()))
-            .map_err(|_| "test stopped waiting for provider request".to_string())?;
-        wait_for_peer_close(&mut stream)
+        let (mut stream, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(DEADLINE)).unwrap();
+        read_http_request(&mut stream);
+        received_tx.send(()).unwrap();
+        wait_for_peer_close(&mut stream);
     });
     HangingProvider {
         endpoint: format!("http://{address}"),
@@ -215,11 +155,10 @@ fn ctrl_c_releases_the_session_lock_and_exits_130() {
     }
     let child = ChildGuard::new(command.spawn().unwrap());
 
-    match provider.received.recv_timeout(DEADLINE) {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => panic!("provider did not receive a complete request: {err}"),
-        Err(err) => panic!("timed out waiting for provider request: {err}"),
-    }
+    provider
+        .received
+        .recv_timeout(DEADLINE)
+        .expect("provider must receive a complete request");
     let lock = lock_dir(temp.path()).expect("session lock must exist while request is in flight");
     let session_dir = lock.parent().unwrap().to_path_buf();
 
@@ -230,11 +169,7 @@ fn ctrl_c_releases_the_session_lock_and_exits_130() {
     assert!(status.success(), "failed to send SIGINT to sgpt");
 
     let output = child.wait_with_output(DEADLINE);
-    let provider_result = join_with_deadline(provider.handle, DEADLINE);
-    assert!(
-        provider_result.is_ok(),
-        "provider error: {provider_result:?}"
-    );
+    join_with_deadline(provider.handle, DEADLINE);
     assert_eq!(output.status.code(), Some(130));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("interrupted"), "stderr: {stderr}");

@@ -290,11 +290,8 @@ mod tests {
 
     #[test]
     fn request_never_includes_half_a_turn() {
-        let conversation = Conversation::from_parts(
-            vec![turn(0, "", &"a".repeat(300_000))],
-            Vec::new(),
-        )
-        .unwrap();
+        let conversation =
+            Conversation::from_parts(vec![turn(0, "", &"a".repeat(300_000))], Vec::new()).unwrap();
         let config = config();
         let context = ContextBlock::default();
         let mandatory = build_body(
