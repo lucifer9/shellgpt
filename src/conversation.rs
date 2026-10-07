@@ -84,37 +84,8 @@ impl Turn {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct InputAnchor {
-    pub instruction: String,
-    pub stdin: String,
-    pub timestamp: String,
-}
-
-impl From<&UserInput> for InputAnchor {
-    fn from(input: &UserInput) -> Self {
-        Self {
-            instruction: input.instruction.clone(),
-            stdin: input.stdin.clone(),
-            timestamp: input.timestamp.clone(),
-        }
-    }
-}
-
-impl InputAnchor {
-    pub fn rendered(&self) -> String {
-        UserInput {
-            instruction: self.instruction.clone(),
-            stdin: self.stdin.clone(),
-            timestamp: self.timestamp.clone(),
-        }
-        .rendered()
-    }
-
-    fn logical_bytes(&self) -> usize {
-        self.instruction.len() + self.stdin.len()
-    }
-}
+/// A retired user input kept for its stdin; it has the same shape as `UserInput`.
+pub type InputAnchor = UserInput;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Conversation {
@@ -136,7 +107,6 @@ impl Conversation {
             ensure!(ids.insert(turn.request_id.clone()), "duplicate request id");
         }
         let anchors = select_anchors(&anchors);
-        debug_assert!(anchors_obey_invariant(&anchors));
         Ok(Self { turns, anchors })
     }
 
@@ -185,13 +155,18 @@ impl Conversation {
         if self.turns.len() <= 1 {
             return false;
         }
+        self.drop_oldest_turn();
+        true
+    }
+
+    /// Moves the oldest Turn out of the window, keeping a non-empty stdin as an
+    /// Input Anchor and re-establishing the Anchor invariant immediately.
+    fn drop_oldest_turn(&mut self) {
         let removed = self.turns.remove(0);
         if !removed.user.stdin.is_empty() {
-            self.anchors.push(InputAnchor::from(&removed.user));
+            self.anchors.push(removed.user);
+            self.anchors = select_anchors(&self.anchors);
         }
-        self.anchors = select_anchors(&self.anchors);
-        debug_assert!(anchors_obey_invariant(&self.anchors));
-        true
     }
 
     fn compact(&mut self) {
@@ -199,20 +174,8 @@ impl Conversation {
             return;
         }
         while self.turns.len() > 1 && self.logical_bytes() > LOGICAL_LOW_WATER {
-            let removed = self.turns.remove(0);
-            if !removed.user.stdin.is_empty() {
-                self.anchors.push(InputAnchor::from(&removed.user));
-            }
+            self.drop_oldest_turn();
         }
-        self.compact_anchors_to_fit();
-        debug_assert!(anchors_obey_invariant(&self.anchors));
-    }
-
-    fn compact_anchors_to_fit(&mut self) {
-        if self.logical_bytes() <= LOGICAL_LOW_WATER {
-            return;
-        }
-        self.anchors = select_anchors(&self.anchors);
         while self.anchors.len() > 1 && self.logical_bytes() > LOGICAL_LOW_WATER {
             self.anchors.remove(1);
         }
@@ -246,16 +209,7 @@ fn anchors_obey_invariant(anchors: &[InputAnchor]) -> bool {
 }
 
 fn select_anchors(anchors: &[InputAnchor]) -> Vec<InputAnchor> {
-    if anchors.is_empty() {
-        return Vec::new();
-    }
-    if anchors.len() <= ANCHOR_LIMIT
-        && anchors
-            .iter()
-            .map(InputAnchor::logical_bytes)
-            .sum::<usize>()
-            <= ANCHOR_BUDGET
-    {
+    if anchors_obey_invariant(anchors) {
         return anchors.to_vec();
     }
     let first_budget = ANCHOR_BUDGET / 2;
@@ -434,5 +388,22 @@ mod tests {
                 .rendered()
                 .contains("[history truncated]")
         );
+    }
+
+    #[test]
+    fn compaction_that_reaches_low_water_still_bounds_anchors() {
+        let mut conversation = Conversation::default();
+        let stdin = format!("head{}tail", "x".repeat(400 * 1024));
+        conversation
+            .commit(turn(0, &stdin, &"a".repeat(300_000)))
+            .unwrap();
+        for id in 1..6 {
+            conversation
+                .commit(turn(id, "", &"a".repeat(300_000)))
+                .unwrap();
+        }
+        assert!(anchors_obey_invariant(conversation.anchors()));
+        let anchor = &conversation.anchors()[0].rendered();
+        assert!(anchor.contains("head") && anchor.contains("tail"));
     }
 }
