@@ -200,13 +200,11 @@ fn split_v1_input(content: &str, stdin_bytes: usize) -> anyhow::Result<(String, 
 pub(super) fn save_conversation(
     session: &LocalSession,
     conversation_id: &str,
-    before: &Conversation,
     after: &Conversation,
 ) -> anyhow::Result<()> {
     save_conversation_with_limits(
         session,
         conversation_id,
-        before,
         after,
         HISTORY_PHYSICAL_TARGET,
         HISTORY_PHYSICAL_LIMIT,
@@ -216,49 +214,13 @@ pub(super) fn save_conversation(
 fn save_conversation_with_limits(
     session: &LocalSession,
     conversation_id: &str,
-    before: &Conversation,
     after: &Conversation,
     target: u64,
     limit: u64,
 ) -> anyhow::Result<()> {
     let path = session.conversation_path(conversation_id)?;
-    let existing_matches_before = if path.exists() {
-        fs::read(&path)? == serialize_v2(before)?
-    } else {
-        before.turns().is_empty() && before.anchors().is_empty()
-    };
-    let (persisted, bytes, physically_compacted) =
+    let (_persisted, bytes, _physically_compacted) =
         prepare_for_physical_limit(after, target as usize, limit as usize)?;
-    let append_fast_path = !physically_compacted
-        && existing_matches_before
-        && after.anchors() == before.anchors()
-        && after.turns().len() == before.turns().len() + 1;
-    if append_fast_path {
-        let record = V2Record {
-            version: 2,
-            kind: "turn".into(),
-            turn: after.turns().last().cloned(),
-            input_anchor: None,
-        };
-        let mut line = serde_json::to_vec(&record)?;
-        line.push(b'\n');
-        let existing = fs::metadata(&path)
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
-        ensure!(
-            existing + line.len() as u64 <= limit,
-            "conversation history exceeded 16 MiB physical limit."
-        );
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(&path)?;
-        file.write_all(&line)?;
-        set_file_0600(&path)?;
-        return Ok(());
-    }
-    debug_assert_eq!(bytes, serialize_v2(&persisted)?);
     atomic_write_0600(&path, &bytes)
 }
 
@@ -532,7 +494,7 @@ mod tests {
         after
             .commit(turn(100, "", "ok"))
             .unwrap();
-        save_conversation(&session, id, &before, &after).unwrap();
+        save_conversation(&session, id, &after).unwrap();
         let text = fs::read_to_string(path).unwrap();
         assert!(text.lines().all(|line| line.contains("\"version\":2")));
         assert_eq!(load_conversation(&session, id).unwrap().turns().len(), 2);
@@ -558,7 +520,7 @@ mod tests {
         after
             .commit(turn(1, "", "ok"))
             .unwrap();
-        save_conversation(&session, id, &before, &after).unwrap();
+        save_conversation(&session, id, &after).unwrap();
         assert_eq!(load_conversation(&session, id).unwrap().turns().len(), 1);
         assert_eq!(
             fs::metadata(session.conversation_path(id).unwrap())
@@ -603,7 +565,7 @@ mod tests {
 
         let mut after = before.clone();
         after.commit(turn(100, "", "ok")).unwrap();
-        save_conversation(&session, id, &before, &after).unwrap();
+        save_conversation(&session, id, &after).unwrap();
 
         let persisted = fs::read(&path).unwrap();
         assert_ne!(persisted, raw);
@@ -712,13 +674,13 @@ mod tests {
         .unwrap();
         let path = session.conversation_path(id).unwrap();
         fs::write(&path, serialize_v2(&before).unwrap()).unwrap();
-        save_conversation_with_limits(&session, id, &before, &after, 2_500, 3_000).unwrap();
+        save_conversation_with_limits(&session, id, &after, 2_500, 3_000).unwrap();
         assert!(fs::metadata(&path).unwrap().len() <= 2_500);
 
         let persisted = load_conversation(&session, id).unwrap();
         let mut appended = persisted.clone();
         appended.commit(turn(100, "", "ok")).unwrap();
-        save_conversation_with_limits(&session, id, &persisted, &appended, 2_500, 3_000).unwrap();
+        save_conversation_with_limits(&session, id, &appended, 2_500, 3_000).unwrap();
         assert_eq!(
             load_conversation(&session, id)
                 .unwrap()
@@ -751,7 +713,6 @@ mod tests {
             save_conversation_with_limits(
                 &session,
                 id,
-                &Conversation::default(),
                 &after,
                 900,
                 1_000,

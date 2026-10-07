@@ -51,7 +51,7 @@ impl LocalShellSession {
         request: LocalRequest,
     ) -> anyhow::Result<String> {
         let _lock = history::SessionLock::acquire(session, &request_id, request.mode.as_str())?;
-        let (conversation_id, conversation) = match request.mode {
+        let (conversation_id, mut conversation) = match request.mode {
             RequestMode::Continue => {
                 let current = history::read_current(session)?
                     .ok_or_else(|| anyhow::anyhow!(ERR_NO_PREVIOUS))?;
@@ -70,14 +70,13 @@ impl LocalShellSession {
             &request.input,
             &serde_json::to_vec(&request.context)?,
         );
-        let mut committed = conversation.clone();
-        committed.commit(Turn {
+        conversation.commit(Turn {
             request_id,
             request_digest: digest,
             user: request.input,
             assistant: AssistantResponse::new(answer.clone()),
         })?;
-        history::save_conversation(session, &conversation_id, &conversation, &committed)?;
+        history::save_conversation(session, &conversation_id, &conversation)?;
         if request.mode == RequestMode::New {
             history::write_current(session, &conversation_id)?;
         }
@@ -190,13 +189,12 @@ mod tests {
     async fn commit_failure_keeps_conversation_and_current_unchanged() {
         let (_temp, session) = fixture();
         let conversation_id = "0123456789abcdef";
-        let before = Conversation::default();
         let existing = Conversation::from_parts(
             vec![turn(REQUEST_ID, "different-digest", "old answer")],
             Vec::new(),
         )
         .unwrap();
-        history::save_conversation(&session, conversation_id, &before, &existing).unwrap();
+        history::save_conversation(&session, conversation_id, &existing).unwrap();
         history::write_current(&session, conversation_id).unwrap();
         let history_before = fs::read(session.conversation_path(conversation_id).unwrap()).unwrap();
         let current_before = fs::read(session.current_path()).unwrap();
@@ -247,13 +245,12 @@ mod tests {
     async fn continue_success_preserves_current_conversation_id() {
         let (_temp, session) = fixture();
         let conversation_id = "0123456789abcdef";
-        let before = Conversation::default();
         let existing = Conversation::from_parts(
             vec![turn("2222222222222222", "digest", "old answer")],
             Vec::new(),
         )
         .unwrap();
-        history::save_conversation(&session, conversation_id, &before, &existing).unwrap();
+        history::save_conversation(&session, conversation_id, &existing).unwrap();
         history::write_current(&session, conversation_id).unwrap();
         let (endpoint, server) = provider(
             "200 OK",
