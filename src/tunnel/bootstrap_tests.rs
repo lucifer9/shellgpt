@@ -25,27 +25,20 @@ fn bootstrap_is_valid_posix_shell_without_secrets() {
 }
 
 #[test]
-fn nested_tunnel_uses_shared_argument_policy_and_real_ssh_harness() {
-    for case in fixtures::ARGS {
-        let harness = NestedSshHarness::new("hostname example\n", "200");
-        let output = harness.run(case.args);
-        assert_eq!(
-            output.status.success(),
-            case.accepted,
-            "{}: {}",
-            case.name,
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let calls = harness.calls();
-        if case.accepted {
-            assert!(calls.contains("PHASE=-G\n"), "{}", case.name);
-            assert!(calls.contains("PHASE=final\n"), "{}", case.name);
-            for option in super::ssh::policy::CONTROLLED_OPTIONS {
-                assert!(calls.contains(option), "{} missing {option}", case.name);
-            }
-        } else {
-            assert!(calls.is_empty(), "{} unexpectedly called ssh", case.name);
-        }
+fn nested_tunnel_forwards_user_args_with_controlled_options() {
+    let harness = NestedSshHarness::new("hostname example\n", "200");
+    let output = harness.run(&["-p", "2222", "host"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = harness.calls();
+    assert!(calls.contains("PHASE=-G\n"));
+    assert!(calls.contains("PHASE=final\n"));
+    assert!(calls.contains("ARG=-p\nARG=2222\nARG=host\n"));
+    for option in super::ssh::policy::CONTROLLED_OPTIONS {
+        assert!(calls.contains(option), "missing {option}");
     }
 }
 

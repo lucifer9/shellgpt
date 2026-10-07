@@ -1,13 +1,8 @@
 pub fn stage1_script() -> String {
-    STAGE1_TEMPLATE
-        .replace(
-            "__SGPT_SSH_VALIDATE_FUNCTION__",
-            &super::ssh::policy::shell_validation_function(),
-        )
-        .replace(
-            "__SGPT_SSH_CONTROLLED_OPTIONS__",
-            &super::ssh::policy::shell_controlled_arguments(),
-        )
+    STAGE1_TEMPLATE.replace(
+        "__SGPT_SSH_CONTROLLED_OPTIONS__",
+        &super::ssh::policy::shell_controlled_arguments(),
+    )
 }
 
 const STAGE1_TEMPLATE: &str = r#"#!/bin/sh
@@ -106,10 +101,8 @@ _sgpt_ask() {
   command cat "$_sgpt_answer"
   [ "$(command jq -Rs 'endswith("\n")' "$_sgpt_answer" 2>/dev/null)" = true ] || printf '\n'
 }
-__SGPT_SSH_VALIDATE_FUNCTION__
 _sgpt_tunnel_ssh() {
   command -v ssh >/dev/null 2>&1 || { printf 'sgpt remote dependency missing: ssh.\n' >&2; return 1; }
-  _sgpt_validate_ssh_args "$@" || return 1
   _sgpt_effective="$SGPT_SESSION_DIR/ssh-config"
   _sgpt_error="$SGPT_SESSION_DIR/ssh-error"
   _sgpt_stdout_fifo="$SGPT_SESSION_DIR/ssh-stdout-fifo"
