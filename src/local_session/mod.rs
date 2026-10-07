@@ -73,10 +73,9 @@ impl LocalShellSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AiConfig;
-    use crate::conversation::{AssistantResponse, Conversation};
+    use crate::conversation::Conversation;
+    use crate::test_support::{ai_config, chat_body, http_response, provider, turn};
     use std::fs;
-    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::{mpsc, oneshot};
@@ -84,17 +83,7 @@ mod tests {
     const REQUEST_ID: &str = "1111111111111111";
 
     fn client(endpoint: String) -> OpenAiClient {
-        OpenAiClient::new(AiConfig {
-            endpoint,
-            api_key: "key".into(),
-            model: "model".into(),
-            system_prompt: None,
-            proxy: None,
-            timeout: Duration::from_secs(5),
-            max_projected_sessions: 64,
-            max_concurrent_requests: 4,
-        })
-        .unwrap()
+        OpenAiClient::new(ai_config(endpoint)).unwrap()
     }
 
     fn fixture() -> (tempfile::TempDir, history::LocalSession) {
@@ -112,44 +101,11 @@ mod tests {
         }
     }
 
-    fn turn(request_id: &str, digest: &str, answer: &str) -> Turn {
-        Turn {
-            request_id: request_id.into(),
-            request_digest: digest.into(),
-            user: UserInput::new("previous", ""),
-            assistant: AssistantResponse::new(answer),
-        }
-    }
-
-    async fn provider(
-        status: &'static str,
-        body: &'static [u8],
-    ) -> (String, tokio::task::JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = [0_u8; 8192];
-            let _ = stream.read(&mut request).await.unwrap();
-            stream
-                .write_all(
-                    format!(
-                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n",
-                        body.len()
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
-            stream.write_all(body).await.unwrap();
-        });
-        (format!("http://{address}/v1/chat/completions"), server)
-    }
-
     #[tokio::test]
     async fn provider_failure_writes_neither_conversation_nor_current_and_returns_no_answer() {
         let (_temp, session) = fixture();
-        let (endpoint, server) = provider("500 Internal Server Error", b"provider failed").await;
+        let (endpoint, server) =
+            provider("500 Internal Server Error", b"provider failed".to_vec()).await;
         let runner = LocalShellSession::new(client(endpoint));
 
         assert!(
@@ -173,7 +129,7 @@ mod tests {
         let (_temp, session) = fixture();
         let conversation_id = "0123456789abcdef";
         let existing = Conversation::from_parts(
-            vec![turn(REQUEST_ID, "different-digest", "old answer")],
+            vec![turn(0x1111_1111_1111_1111, "", "old answer")],
             Vec::new(),
         )
         .unwrap();
@@ -181,11 +137,7 @@ mod tests {
         history::write_current(&session, conversation_id).unwrap();
         let history_before = fs::read(session.conversation_path(conversation_id).unwrap()).unwrap();
         let current_before = fs::read(session.current_path()).unwrap();
-        let (endpoint, server) = provider(
-            "200 OK",
-            br#"{"choices":[{"message":{"content":"new answer"}}]}"#,
-        )
-        .await;
+        let (endpoint, server) = provider("200 OK", chat_body("new answer")).await;
         let runner = LocalShellSession::new(client(endpoint));
 
         assert!(
@@ -205,11 +157,7 @@ mod tests {
     #[tokio::test]
     async fn new_success_sets_current_only_after_persisting_the_complete_turn() {
         let (_temp, session) = fixture();
-        let (endpoint, server) = provider(
-            "200 OK",
-            br#"{"choices":[{"message":{"content":"answer"}}]}"#,
-        )
-        .await;
+        let (endpoint, server) = provider("200 OK", chat_body("answer")).await;
         let runner = LocalShellSession::new(client(endpoint));
 
         let answer = runner
@@ -229,17 +177,13 @@ mod tests {
         let (_temp, session) = fixture();
         let conversation_id = "0123456789abcdef";
         let existing = Conversation::from_parts(
-            vec![turn("2222222222222222", "digest", "old answer")],
+            vec![turn(0x2222_2222_2222_2222, "", "old answer")],
             Vec::new(),
         )
         .unwrap();
         history::save_conversation(&session, conversation_id, &existing).unwrap();
         history::write_current(&session, conversation_id).unwrap();
-        let (endpoint, server) = provider(
-            "200 OK",
-            br#"{"choices":[{"message":{"content":"next answer"}}]}"#,
-        )
-        .await;
+        let (endpoint, server) = provider("200 OK", chat_body("next answer")).await;
         let runner = LocalShellSession::new(client(endpoint));
 
         let answer = runner
@@ -272,8 +216,7 @@ mod tests {
         )
         .unwrap();
         history::write_current(&session, conversation_id).unwrap();
-        let (endpoint, server) =
-            provider("200 OK", br#"{"choices":[{"message":{"content":"next"}}]}"#).await;
+        let (endpoint, server) = provider("200 OK", chat_body("next")).await;
         let runner = LocalShellSession::new(client(endpoint));
 
         runner
@@ -311,18 +254,10 @@ mod tests {
             release_rx.await.unwrap();
             fs::remove_dir(&conversations).unwrap();
             fs::write(&conversations, b"not a directory").unwrap();
-            let body = br#"{"choices":[{"message":{"content":"answer"}}]}"#;
             stream
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n",
-                        body.len()
-                    )
-                    .as_bytes(),
-                )
+                .write_all(&http_response("200 OK", &chat_body("answer")))
                 .await
                 .unwrap();
-            stream.write_all(body).await.unwrap();
         });
         let runner = LocalShellSession::new(client(endpoint));
         let session_clone = session.clone();
