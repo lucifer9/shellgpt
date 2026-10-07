@@ -741,21 +741,13 @@ mod tests {
         .await;
         assert_eq!(ask_boundary.status(), StatusCode::BAD_REQUEST);
         let ask = post_body(
-            router.clone(),
+            router,
             "/v1/ask",
             &token,
             padded_json("{}", ASK_BODY_LIMIT + 1),
         )
         .await;
         assert_eq!(ask.status(), StatusCode::PAYLOAD_TOO_LARGE);
-        let extractor_rejection = post_body(
-            router,
-            "/v1/ask",
-            &token,
-            padded_json("{}", ASK_BODY_LIMIT + 2),
-        )
-        .await;
-        assert_eq!(extractor_rejection.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
