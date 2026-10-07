@@ -31,43 +31,17 @@ pub struct LocalRequest {
 pub struct LocalShellSession {
     client: OpenAiClient,
     debug: bool,
-    #[cfg(test)]
-    fixture: Option<(history::LocalSession, String)>,
 }
 
 impl LocalShellSession {
     pub fn new(client: OpenAiClient, debug: bool) -> Self {
-        Self {
-            client,
-            debug,
-            #[cfg(test)]
-            fixture: None,
-        }
+        Self { client, debug }
     }
 
     pub async fn execute(&self, request: LocalRequest) -> anyhow::Result<String> {
-        #[cfg(test)]
-        if let Some((session, request_id)) = &self.fixture {
-            return self
-                .execute_resolved(session, request_id.clone(), request)
-                .await;
-        }
         let session = history::LocalSession::resolve().await?;
         let request_id = ids::id128()?;
         self.execute_resolved(&session, request_id, request).await
-    }
-
-    #[cfg(test)]
-    fn at_for_tests(
-        client: OpenAiClient,
-        session: history::LocalSession,
-        request_id: &str,
-    ) -> Self {
-        Self {
-            client,
-            debug: false,
-            fixture: Some((session, request_id.into())),
-        }
     }
 
     async fn execute_resolved(
@@ -196,9 +170,12 @@ mod tests {
     async fn provider_failure_writes_neither_conversation_nor_current_and_returns_no_answer() {
         let (_temp, session) = fixture();
         let (endpoint, server) = provider("500 Internal Server Error", b"provider failed").await;
-        let runner = LocalShellSession::at_for_tests(client(endpoint), session.clone(), REQUEST_ID);
+        let runner = LocalShellSession::new(client(endpoint), false);
 
-        assert!(runner.execute(request(RequestMode::New)).await.is_err());
+        assert!(runner
+            .execute_resolved(&session, REQUEST_ID.into(), request(RequestMode::New))
+            .await
+            .is_err());
         server.await.unwrap();
         assert!(history::read_current(&session).unwrap().is_none());
         assert_eq!(
@@ -228,11 +205,11 @@ mod tests {
             br#"{"choices":[{"message":{"content":"new answer"}}]}"#,
         )
         .await;
-        let runner = LocalShellSession::at_for_tests(client(endpoint), session.clone(), REQUEST_ID);
+        let runner = LocalShellSession::new(client(endpoint), false);
 
         assert!(
             runner
-                .execute(request(RequestMode::Continue))
+                .execute_resolved(&session, REQUEST_ID.into(), request(RequestMode::Continue))
                 .await
                 .is_err()
         );
@@ -252,9 +229,12 @@ mod tests {
             br#"{"choices":[{"message":{"content":"answer"}}]}"#,
         )
         .await;
-        let runner = LocalShellSession::at_for_tests(client(endpoint), session.clone(), REQUEST_ID);
+        let runner = LocalShellSession::new(client(endpoint), false);
 
-        let answer = runner.execute(request(RequestMode::New)).await.unwrap();
+        let answer = runner
+            .execute_resolved(&session, REQUEST_ID.into(), request(RequestMode::New))
+            .await
+            .unwrap();
         server.await.unwrap();
         let current = history::read_current(&session).unwrap().unwrap();
         let conversation = history::load_conversation(&session, &current).unwrap();
@@ -280,10 +260,10 @@ mod tests {
             br#"{"choices":[{"message":{"content":"next answer"}}]}"#,
         )
         .await;
-        let runner = LocalShellSession::at_for_tests(client(endpoint), session.clone(), REQUEST_ID);
+        let runner = LocalShellSession::new(client(endpoint), false);
 
         let answer = runner
-            .execute(request(RequestMode::Continue))
+            .execute_resolved(&session, REQUEST_ID.into(), request(RequestMode::Continue))
             .await
             .unwrap();
         server.await.unwrap();
@@ -314,10 +294,10 @@ mod tests {
         history::write_current(&session, conversation_id).unwrap();
         let (endpoint, server) =
             provider("200 OK", br#"{"choices":[{"message":{"content":"next"}}]}"#).await;
-        let runner = LocalShellSession::at_for_tests(client(endpoint), session.clone(), REQUEST_ID);
+        let runner = LocalShellSession::new(client(endpoint), false);
 
         runner
-            .execute(request(RequestMode::Continue))
+            .execute_resolved(&session, REQUEST_ID.into(), request(RequestMode::Continue))
             .await
             .unwrap();
         server.await.unwrap();
@@ -364,9 +344,13 @@ mod tests {
                 .unwrap();
             stream.write_all(body).await.unwrap();
         });
-        let runner = LocalShellSession::at_for_tests(client(endpoint), session.clone(), REQUEST_ID);
-        let transaction =
-            tokio::spawn(async move { runner.execute(request(RequestMode::New)).await });
+        let runner = LocalShellSession::new(client(endpoint), false);
+        let session_clone = session.clone();
+        let transaction = tokio::spawn(async move {
+            runner
+                .execute_resolved(&session_clone, REQUEST_ID.into(), request(RequestMode::New))
+                .await
+        });
 
         let release = accepted_rx.recv().await.unwrap();
         assert!(session.dir().join("lock").is_dir());
