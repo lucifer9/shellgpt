@@ -164,8 +164,6 @@ impl ProjectionTree {
         state
             .sessions
             .insert(session_id.clone(), ProjectedShellSession::pending(None));
-        drop(state);
-        self.schedule_pending_expiry(session_id);
         Ok(())
     }
 
@@ -195,8 +193,6 @@ impl ProjectionTree {
             child_id.clone(),
             ProjectedShellSession::pending(Some(parent_id.to_string())),
         );
-        drop(state);
-        self.schedule_pending_expiry(child_id);
         Ok(())
     }
 
@@ -314,20 +310,6 @@ impl ProjectionTree {
         ProjectionSnapshot { sessions }
     }
 
-    fn schedule_pending_expiry(&self, session_id: String) {
-        let tree = self.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(tree.pending_ttl).await;
-            let mut state = tree.inner.lock().await;
-            let expired = state.sessions.get(&session_id).is_some_and(|session| {
-                session.status == SessionStatus::Pending
-                    && session.pending_since.elapsed() >= tree.pending_ttl
-            });
-            if expired {
-                remove_session(&mut state, &session_id);
-            }
-        });
-    }
 
     async fn complete_lease(
         &self,
