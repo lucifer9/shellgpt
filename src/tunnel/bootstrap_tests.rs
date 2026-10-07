@@ -121,6 +121,9 @@ struct NestedSshHarness {
     script: std::path::PathBuf,
     session: std::path::PathBuf,
     calls: std::path::PathBuf,
+    path: String,
+    effective_config: String,
+    prepare_status: String,
 }
 
 impl NestedSshHarness {
@@ -174,15 +177,14 @@ exit 0
         std::fs::write(&script, format!("{common}\n_sgpt_tunnel_ssh \"$@\"\n")).unwrap();
 
         let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-        // The path is stored in the script's sidecar environment file to keep run() small.
-        std::fs::write(temp.path().join("path"), path).unwrap();
-        std::fs::write(temp.path().join("effective"), effective_config).unwrap();
-        std::fs::write(temp.path().join("status"), prepare_status).unwrap();
         Self {
             _temp: temp,
             script,
             session,
             calls,
+            path,
+            effective_config: effective_config.into(),
+            prepare_status: prepare_status.into(),
         }
     }
 
@@ -210,22 +212,15 @@ exit 0
     }
 
     fn configure<'a>(&self, command: &'a mut Command) -> &'a mut Command {
-        let root = self.script.parent().unwrap();
         command
-            .env("PATH", std::fs::read_to_string(root.join("path")).unwrap())
+            .env("PATH", &self.path)
             .env("SGPT_SESSION_DIR", &self.session)
             .env("SGPT_PORT", "18080")
             .env("SGPT_SESSION_TOKEN", "a".repeat(64))
             .env("SGPT_SESSION_ID", "0123456789abcdef")
             .env("SGPT_TEST_SSH_CALLS", &self.calls)
-            .env(
-                "SGPT_TEST_EFFECTIVE_CONFIG",
-                std::fs::read_to_string(root.join("effective")).unwrap(),
-            )
-            .env(
-                "SGPT_TEST_PREPARE_STATUS",
-                std::fs::read_to_string(root.join("status")).unwrap(),
-            )
+            .env("SGPT_TEST_EFFECTIVE_CONFIG", &self.effective_config)
+            .env("SGPT_TEST_PREPARE_STATUS", &self.prepare_status)
     }
 
     fn calls(&self) -> String {
